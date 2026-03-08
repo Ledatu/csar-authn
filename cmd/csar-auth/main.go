@@ -22,6 +22,7 @@ import (
 	"github.com/Ledatu/csar-auth/internal/session"
 	"github.com/Ledatu/csar-auth/internal/store"
 	"github.com/Ledatu/csar-auth/internal/store/postgres"
+	"github.com/Ledatu/csar-auth/internal/sts"
 )
 
 func main() {
@@ -96,9 +97,20 @@ func run(configPath string, logger *slog.Logger) error {
 		return fmt.Errorf("initializing oauth: %w", err)
 	}
 
+	// Initialize STS handler (optional).
+	var stsHandler *sts.Handler
+	if cfg.STS.Enabled {
+		stsHandler, err = sts.New(cfg.STS, cfg.JWT, sessionMgr, logger)
+		if err != nil {
+			return fmt.Errorf("initializing STS: %w", err)
+		}
+		defer stsHandler.Stop()
+		logger.Info("STS enabled", "service_accounts", len(cfg.STS.ServiceAccounts))
+	}
+
 	// Wire HTTP handlers.
 	mux := http.NewServeMux()
-	h := handler.New(st, sessionMgr, oauthMgr, logger, cfg)
+	h := handler.New(st, sessionMgr, oauthMgr, stsHandler, logger, cfg)
 	h.RegisterRoutes(mux)
 
 	srv := &http.Server{

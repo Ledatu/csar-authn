@@ -64,8 +64,46 @@ func (m *Manager) Keys() *KeyPair {
 	return m.keys
 }
 
+// STSClaims represents the JWT payload for STS-issued scoped tokens.
+type STSClaims struct {
+	Sub string   `json:"sub"` // service account name
+	Iss string   `json:"iss"` // csar-auth issuer
+	Aud []string `json:"aud"` // scoped audiences
+	Exp int64    `json:"exp"` // expiration (Unix)
+	Iat int64    `json:"iat"` // issued at (Unix)
+	Nbf int64    `json:"nbf"` // not before (Unix)
+}
+
+// IssueScopedToken creates a signed JWT for an STS token exchange.
+// The token contains an audience array (not a single string) for scope enforcement.
+func (m *Manager) IssueScopedToken(sub string, audiences []string, ttl time.Duration) (string, error) {
+	now := time.Now()
+	claims := STSClaims{
+		Sub: sub,
+		Iss: m.cfg.Issuer,
+		Aud: audiences,
+		Iat: now.Unix(),
+		Nbf: now.Unix(),
+		Exp: now.Add(ttl).Unix(),
+	}
+
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("marshalling claims: %w", err)
+	}
+	return m.signPayload(claimsJSON)
+}
+
 func (m *Manager) signToken(claims Claims) (string, error) {
-	// Build header.
+	claimsJSON, err := json.Marshal(claims)
+	if err != nil {
+		return "", fmt.Errorf("marshalling claims: %w", err)
+	}
+	return m.signPayload(claimsJSON)
+}
+
+// signPayload builds a JWT from pre-marshalled claims JSON.
+func (m *Manager) signPayload(claimsJSON []byte) (string, error) {
 	header := map[string]string{
 		"alg": m.keys.Algorithm,
 		"typ": "JWT",
@@ -75,10 +113,6 @@ func (m *Manager) signToken(claims Claims) (string, error) {
 	headerJSON, err := json.Marshal(header)
 	if err != nil {
 		return "", fmt.Errorf("marshalling header: %w", err)
-	}
-	claimsJSON, err := json.Marshal(claims)
-	if err != nil {
-		return "", fmt.Errorf("marshalling claims: %w", err)
 	}
 
 	headerB64 := base64.RawURLEncoding.EncodeToString(headerJSON)

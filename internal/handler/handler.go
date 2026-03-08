@@ -15,6 +15,7 @@ import (
 	"github.com/Ledatu/csar-auth/internal/oauth"
 	"github.com/Ledatu/csar-auth/internal/session"
 	"github.com/Ledatu/csar-auth/internal/store"
+	"github.com/Ledatu/csar-auth/internal/sts"
 )
 
 // Handler holds dependencies for HTTP handlers.
@@ -22,16 +23,19 @@ type Handler struct {
 	store      store.Store
 	sessionMgr *session.Manager
 	oauthMgr   *oauth.Manager
+	stsHandler *sts.Handler // nil when STS is not configured
 	logger     *slog.Logger
 	cfg        *config.Config
 }
 
 // New creates a Handler with all dependencies.
-func New(st store.Store, sessionMgr *session.Manager, oauthMgr *oauth.Manager, logger *slog.Logger, cfg *config.Config) *Handler {
+// stsHandler may be nil when STS is not enabled.
+func New(st store.Store, sessionMgr *session.Manager, oauthMgr *oauth.Manager, stsHandler *sts.Handler, logger *slog.Logger, cfg *config.Config) *Handler {
 	return &Handler{
 		store:      st,
 		sessionMgr: sessionMgr,
 		oauthMgr:   oauthMgr,
+		stsHandler: stsHandler,
 		logger:     logger,
 		cfg:        cfg,
 	}
@@ -66,6 +70,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Health check: GET /health
 	mux.HandleFunc("GET /health", h.handleHealth)
+
+	// STS token exchange: POST /sts/token (optional).
+	if h.stsHandler != nil {
+		mux.Handle("POST /sts/token", h.stsHandler)
+	}
 }
 
 func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {

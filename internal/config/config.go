@@ -19,6 +19,22 @@ type Config struct {
 	JWT         JWTConfig      `yaml:"jwt"`
 	OAuth       OAuthConfig    `yaml:"oauth"`
 	Cookie      CookieConfig   `yaml:"cookie"`
+	STS         STSConfig      `yaml:"sts,omitempty"`
+}
+
+// STSConfig controls the Security Token Service for service-to-service auth.
+type STSConfig struct {
+	Enabled         bool                              `yaml:"enabled"`
+	AssertionMaxAge Duration                          `yaml:"assertion_max_age"` // default: "5m"
+	ServiceAccounts map[string]ServiceAccountConfig   `yaml:"service_accounts"`
+}
+
+// ServiceAccountConfig defines a single service account for STS token exchange.
+type ServiceAccountConfig struct {
+	PublicKeyFile    string   `yaml:"public_key_file"`    // path to PEM public key
+	PublicKey        string   `yaml:"public_key"`         // OR inline PEM
+	AllowedAudiences []string `yaml:"allowed_audiences"`  // e.g. ["balance"]
+	TokenTTL         Duration `yaml:"token_ttl"`          // default: inherits jwt.ttl
 }
 
 // DatabaseConfig selects the storage backend.
@@ -119,6 +135,9 @@ func Load(path string) (*Config, error) {
 	if cfg.Database.Driver == "" {
 		cfg.Database.Driver = "postgres"
 	}
+	if cfg.STS.Enabled && cfg.STS.AssertionMaxAge == 0 {
+		cfg.STS.AssertionMaxAge = Duration(5 * time.Minute)
+	}
 
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config validation: %w", err)
@@ -156,6 +175,25 @@ func (c *Config) validate() error {
 	default:
 		return fmt.Errorf("jwt.algorithm must be RS256 or EdDSA, got %q", c.JWT.Algorithm)
 	}
+
+	// Validate STS config when enabled.
+	if c.STS.Enabled {
+		if len(c.STS.ServiceAccounts) == 0 {
+			return fmt.Errorf("sts.service_accounts must not be empty when STS is enabled")
+		}
+		for name, sa := range c.STS.ServiceAccounts {
+			if sa.PublicKeyFile == "" && sa.PublicKey == "" {
+				return fmt.Errorf("sts.service_accounts[%s]: public_key_file or public_key is required", name)
+			}
+			if sa.PublicKeyFile != "" && sa.PublicKey != "" {
+				return fmt.Errorf("sts.service_accounts[%s]: specify only one of public_key_file or public_key", name)
+			}
+			if len(sa.AllowedAudiences) == 0 {
+				return fmt.Errorf("sts.service_accounts[%s].allowed_audiences must not be empty", name)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -197,5 +235,11 @@ func expandEnvInConfig(cfg *Config) {
 		cfg.OAuth.Providers[i].ClientID = expandEnv(cfg.OAuth.Providers[i].ClientID)
 		cfg.OAuth.Providers[i].ClientSecret = expandEnv(cfg.OAuth.Providers[i].ClientSecret)
 		cfg.OAuth.Providers[i].CallbackURL = expandEnv(cfg.OAuth.Providers[i].CallbackURL)
+	}
+
+	for name, sa := range cfg.STS.ServiceAccounts {
+		sa.PublicKeyFile = expandEnv(sa.PublicKeyFile)
+		sa.PublicKey = expandEnv(sa.PublicKey)
+		cfg.STS.ServiceAccounts[name] = sa
 	}
 }
