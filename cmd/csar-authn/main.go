@@ -29,34 +29,34 @@ import (
 )
 
 func main() {
-	csrcParams := parseFlags()
+	csrcParams, refreshInterval := parseFlags()
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
 	}))
 
-	if err := run(csrcParams, logger); err != nil {
+	if err := run(csrcParams, refreshInterval, logger); err != nil {
 		logger.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func parseFlags() configsource.SourceParams {
+func parseFlags() (configsource.SourceParams, string) {
 	p := configsource.SourceParams{
-		Source:          envOrDefault("CONFIG_SOURCE", "file"),
-		File:            envOrDefault("CONFIG_FILE", "config.yaml"),
-		S3Bucket:        envOrDefault("CONFIG_S3_BUCKET", ""),
-		S3Key:           envOrDefault("CONFIG_S3_KEY", "config.yaml"),
-		S3Endpoint:      envOrDefault("CONFIG_S3_ENDPOINT", "https://storage.yandexcloud.net"),
-		S3Region:        envOrDefault("CONFIG_S3_REGION", "ru-central1"),
-		S3AuthMode:      envOrDefault("CONFIG_S3_AUTH_MODE", "static"),
-		S3AccessKeyID:   envOrDefault("CONFIG_S3_ACCESS_KEY_ID", ""),
-		S3SecretKey:     envOrDefault("CONFIG_S3_SECRET_ACCESS_KEY", ""),
-		S3IAMToken:      envOrDefault("CONFIG_S3_IAM_TOKEN", ""),
-		S3OAuthToken:    envOrDefault("CONFIG_S3_OAUTH_TOKEN", ""),
-		S3SAKeyFile:     envOrDefault("CONFIG_S3_SA_KEY_FILE", ""),
-		RefreshInterval: envOrDefault("CONFIG_REFRESH_INTERVAL", "0"),
+		Source:        envOrDefault("CONFIG_SOURCE", "file"),
+		File:          envOrDefault("CONFIG_FILE", "config.yaml"),
+		S3Bucket:      envOrDefault("CONFIG_S3_BUCKET", ""),
+		S3Key:         envOrDefault("CONFIG_S3_KEY", "config.yaml"),
+		S3Endpoint:    envOrDefault("CONFIG_S3_ENDPOINT", "https://storage.yandexcloud.net"),
+		S3Region:      envOrDefault("CONFIG_S3_REGION", "ru-central1"),
+		S3AuthMode:    envOrDefault("CONFIG_S3_AUTH_MODE", "static"),
+		S3AccessKeyID: envOrDefault("CONFIG_S3_ACCESS_KEY_ID", ""),
+		S3SecretKey:   envOrDefault("CONFIG_S3_SECRET_ACCESS_KEY", ""),
+		S3IAMToken:    envOrDefault("CONFIG_S3_IAM_TOKEN", ""),
+		S3OAuthToken:  envOrDefault("CONFIG_S3_OAUTH_TOKEN", ""),
+		S3SAKeyFile:   envOrDefault("CONFIG_S3_SA_KEY_FILE", ""),
 	}
+	refreshInterval := envOrDefault("CONFIG_REFRESH_INTERVAL", "0")
 
 	flag.StringVar(&p.Source, "config-source", p.Source, `config source: "file" or "s3"`)
 	flag.StringVar(&p.File, "config", p.File, "path to config file (file source)")
@@ -70,17 +70,17 @@ func parseFlags() configsource.SourceParams {
 	flag.StringVar(&p.S3IAMToken, "config-s3-iam-token", p.S3IAMToken, "S3 IAM token")
 	flag.StringVar(&p.S3OAuthToken, "config-s3-oauth-token", p.S3OAuthToken, "S3 OAuth token")
 	flag.StringVar(&p.S3SAKeyFile, "config-s3-sa-key-file", p.S3SAKeyFile, "S3 service account key file")
-	flag.StringVar(&p.RefreshInterval, "config-refresh-interval", p.RefreshInterval, "config polling interval (e.g. 60s); 0 disables")
+	flag.StringVar(&refreshInterval, "config-refresh-interval", refreshInterval, "config polling interval (e.g. 60s); 0 disables")
 
 	flag.Parse()
-	return p
+	return p, refreshInterval
 }
 
-func run(p configsource.SourceParams, logger *slog.Logger) error {
+func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logger) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := configsource.LoadInitial(ctx, p, logger)
+	cfg, err := configsource.LoadInitial(ctx, &p, logger)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -148,8 +148,8 @@ func run(p configsource.SourceParams, logger *slog.Logger) error {
 		IdleTimeout:  60 * time.Second,
 	}
 
-	if interval := parseInterval(p.RefreshInterval); interval > 0 {
-		src, err := configsource.BuildSource(p, logger)
+	if interval := parseInterval(refreshInterval); interval > 0 {
+		src, err := configsource.BuildSource(&p, logger)
 		if err != nil {
 			return fmt.Errorf("building config source for watcher: %w", err)
 		}
