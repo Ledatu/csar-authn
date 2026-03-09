@@ -34,7 +34,7 @@ A standalone OAuth authentication service for the [**csar**](https://github.com/
 ### Installation
 
 ```bash
-git clone https://github.com/Ledatu/csar-authn.git
+git clone https://github.com/ledatu/csar-authn.git
 cd csar-authn
 go mod download
 ```

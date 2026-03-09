@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-authn/internal/store"
 )
 
 // Store implements store.Store backed by PostgreSQL.
@@ -79,9 +79,9 @@ func (s *Store) Pool() *pgxpool.Pool {
 func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, email, display_name, avatar_url, created_at, updated_at
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.Email, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
@@ -94,14 +94,29 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, err
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, email, display_name, avatar_url, created_at, updated_at
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at
 		 FROM users WHERE lower(email) = lower($1)`, email,
-	).Scan(&u.ID, &u.Email, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get user by email: %w", err)
+	}
+	return u, nil
+}
+
+func (s *Store) GetUserByPhone(ctx context.Context, phone string) (*store.User, error) {
+	u := &store.User{}
+	err := s.pool.QueryRow(ctx,
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at
+		 FROM users WHERE phone = $1`, phone,
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, store.ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get user by phone: %w", err)
 	}
 	return u, nil
 }
@@ -115,13 +130,16 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) (*store.User, err
 	u.UpdatedAt = now
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (id, email, display_name, avatar_url, created_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6)`,
-		u.ID, u.Email, u.DisplayName, u.AvatarURL, u.CreatedAt, u.UpdatedAt,
+		`INSERT INTO users (id, email, phone, display_name, avatar_url, created_at, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7)`,
+		u.ID, u.Email, u.Phone, u.DisplayName, u.AvatarURL, u.CreatedAt, u.UpdatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_users_email_lower") {
 			return nil, fmt.Errorf("user with email %q already exists: %w", u.Email, err)
+		}
+		if strings.Contains(err.Error(), "idx_users_phone") {
+			return nil, fmt.Errorf("user with phone %q already exists: %w", u.Phone, err)
 		}
 		return nil, fmt.Errorf("create user: %w", err)
 	}
@@ -131,9 +149,10 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) (*store.User, err
 func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
 	u.UpdatedAt = time.Now()
 	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET email = $2, display_name = $3, avatar_url = $4, updated_at = $5
+		`UPDATE users SET email = NULLIF($2, ''), phone = NULLIF($3, ''),
+		 display_name = $4, avatar_url = $5, updated_at = $6
 		 WHERE id = $1`,
-		u.ID, u.Email, u.DisplayName, u.AvatarURL, u.UpdatedAt,
+		u.ID, u.Email, u.Phone, u.DisplayName, u.AvatarURL, u.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("update user: %w", err)
@@ -147,11 +166,11 @@ func (s *Store) GetOAuthAccount(ctx context.Context, provider, providerUserID st
 	a := &store.OAuthAccount{}
 	err := s.pool.QueryRow(ctx,
 		`SELECT provider, provider_user_id, user_id, email, display_name, avatar_url,
-		        access_token, refresh_token, expires_at, linked_at, updated_at
+		        access_token, refresh_token, expires_at, email_verified, linked_at, updated_at
 		 FROM oauth_accounts WHERE provider = $1 AND provider_user_id = $2`,
 		provider, providerUserID,
 	).Scan(&a.Provider, &a.ProviderUserID, &a.UserID, &a.Email, &a.DisplayName, &a.AvatarURL,
-		&a.AccessToken, &a.RefreshToken, &a.ExpiresAt, &a.LinkedAt, &a.UpdatedAt)
+		&a.AccessToken, &a.RefreshToken, &a.ExpiresAt, &a.EmailVerified, &a.LinkedAt, &a.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
@@ -164,7 +183,7 @@ func (s *Store) GetOAuthAccount(ctx context.Context, provider, providerUserID st
 func (s *Store) GetOAuthAccountsByUserID(ctx context.Context, userID uuid.UUID) ([]store.OAuthAccount, error) {
 	rows, err := s.pool.Query(ctx,
 		`SELECT provider, provider_user_id, user_id, email, display_name, avatar_url,
-		        access_token, refresh_token, expires_at, linked_at, updated_at
+		        access_token, refresh_token, expires_at, email_verified, linked_at, updated_at
 		 FROM oauth_accounts WHERE user_id = $1 ORDER BY linked_at`, userID,
 	)
 	if err != nil {
@@ -176,7 +195,7 @@ func (s *Store) GetOAuthAccountsByUserID(ctx context.Context, userID uuid.UUID) 
 	for rows.Next() {
 		var a store.OAuthAccount
 		if err := rows.Scan(&a.Provider, &a.ProviderUserID, &a.UserID, &a.Email, &a.DisplayName, &a.AvatarURL,
-			&a.AccessToken, &a.RefreshToken, &a.ExpiresAt, &a.LinkedAt, &a.UpdatedAt); err != nil {
+			&a.AccessToken, &a.RefreshToken, &a.ExpiresAt, &a.EmailVerified, &a.LinkedAt, &a.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scanning oauth account: %w", err)
 		}
 		accounts = append(accounts, a)
@@ -192,10 +211,10 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, acct *store.OAuthAccount
 	_, err := s.pool.Exec(ctx,
 		`INSERT INTO oauth_accounts
 		 (provider, provider_user_id, user_id, email, display_name, avatar_url,
-		  access_token, refresh_token, expires_at, linked_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+		  access_token, refresh_token, expires_at, email_verified, linked_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
 		acct.Provider, acct.ProviderUserID, acct.UserID, acct.Email, acct.DisplayName, acct.AvatarURL,
-		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt, acct.LinkedAt, acct.UpdatedAt,
+		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt, acct.EmailVerified, acct.LinkedAt, acct.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("create oauth account: %w", err)
@@ -208,11 +227,13 @@ func (s *Store) UpdateOAuthAccount(ctx context.Context, acct *store.OAuthAccount
 	_, err := s.pool.Exec(ctx,
 		`UPDATE oauth_accounts
 		 SET email = $3, display_name = $4, avatar_url = $5,
-		     access_token = $6, refresh_token = $7, expires_at = $8, updated_at = $9
+		     access_token = $6, refresh_token = $7, expires_at = $8,
+		     email_verified = $9, updated_at = $10
 		 WHERE provider = $1 AND provider_user_id = $2`,
 		acct.Provider, acct.ProviderUserID,
 		acct.Email, acct.DisplayName, acct.AvatarURL,
-		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt, acct.UpdatedAt,
+		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt,
+		acct.EmailVerified, acct.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("update oauth account: %w", err)
@@ -231,13 +252,11 @@ func (s *Store) DeleteOAuthAccount(ctx context.Context, provider string, userID 
 	return nil
 }
 
-// FindOrCreateUser performs the lookup-or-create flow atomically:
-//  1. Check oauth_accounts for (provider, provider_user_id)
-//  2. If found, update tokens and return the linked user
-//  3. If not found, check users by email
-//  4. If user exists, create the oauth_account link
-//  5. If no user, create user + oauth_account in a transaction
-func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, displayName, avatarURL string) (*store.User, bool, error) {
+// FindOrCreateUser performs the lookup-or-create flow atomically.
+// It attempts to match by email first, then by phone. Auto-linking on email
+// requires the email to be verified. Phone matches auto-link unconditionally
+// (Telegram always verifies phone numbers).
+func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, phone, displayName, avatarURL string) (*store.User, store.FindOrCreateResult, error) {
 	// Step 1: Check if this oauth account is already linked.
 	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
 	if err == nil {
@@ -248,75 +267,163 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 		existing.Email = acct.Email
 		existing.DisplayName = acct.DisplayName
 		existing.AvatarURL = acct.AvatarURL
+		existing.EmailVerified = acct.EmailVerified
 		if err := s.UpdateOAuthAccount(ctx, existing); err != nil {
-			return nil, false, fmt.Errorf("updating existing oauth account: %w", err)
+			return nil, 0, fmt.Errorf("updating existing oauth account: %w", err)
 		}
 
 		user, err := s.GetUserByID(ctx, existing.UserID)
 		if err != nil {
-			return nil, false, fmt.Errorf("fetching linked user: %w", err)
+			return nil, 0, fmt.Errorf("fetching linked user: %w", err)
 		}
-		return user, false, nil
+		return user, store.ResultExistingLogin, nil
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return nil, false, fmt.Errorf("looking up oauth account: %w", err)
+		return nil, 0, fmt.Errorf("looking up oauth account: %w", err)
 	}
 
-	// Step 2-5: Not linked. Use a transaction for atomicity.
+	// Not linked yet. Use a transaction for atomicity.
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
-		return nil, false, fmt.Errorf("beginning transaction: %w", err)
+		return nil, 0, fmt.Errorf("beginning transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	// Check if a user with this email exists.
-	var user store.User
-	created := false
-	err = tx.QueryRow(ctx,
-		`SELECT id, email, display_name, avatar_url, created_at, updated_at
-		 FROM users WHERE lower(email) = lower($1)`, email,
-	).Scan(&user.ID, &user.Email, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+	// Try to find an existing user by email.
+	var unverifiedEmailConflict bool
+	if email != "" {
+		var user store.User
+		err = tx.QueryRow(ctx,
+			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at
+			 FROM users WHERE lower(email) = lower($1)`, email,
+		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
 
-	if errors.Is(err, pgx.ErrNoRows) {
-		// New user — create.
-		user.ID = uuid.New()
-		user.Email = email
-		user.DisplayName = displayName
-		user.AvatarURL = avatarURL
-		now := time.Now()
-		user.CreatedAt = now
-		user.UpdatedAt = now
-		created = true
-
-		_, err = tx.Exec(ctx,
-			`INSERT INTO users (id, email, display_name, avatar_url, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6)`,
-			user.ID, user.Email, user.DisplayName, user.AvatarURL, user.CreatedAt, user.UpdatedAt,
-		)
-		if err != nil {
-			return nil, false, fmt.Errorf("creating user: %w", err)
+		if err == nil {
+			if acct.EmailVerified {
+				if err := s.insertOAuthAccountTx(ctx, tx, acct, user.ID); err != nil {
+					return nil, 0, err
+				}
+				if err := tx.Commit(ctx); err != nil {
+					return nil, 0, fmt.Errorf("committing transaction: %w", err)
+				}
+				return &user, store.ResultLinkedToExisting, nil
+			}
+			// Unverified email — don't block yet, fall through to phone match.
+			unverifiedEmailConflict = true
+		} else if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, fmt.Errorf("looking up user by email: %w", err)
 		}
-	} else if err != nil {
-		return nil, false, fmt.Errorf("looking up user by email: %w", err)
 	}
 
-	// Link the OAuth account.
+	// Try to find an existing user by phone.
+	if phone != "" {
+		var user store.User
+		err = tx.QueryRow(ctx,
+			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at
+			 FROM users WHERE phone = $1`, phone,
+		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt)
+
+		if err == nil {
+			if err := s.insertOAuthAccountTx(ctx, tx, acct, user.ID); err != nil {
+				return nil, 0, err
+			}
+			if err := tx.Commit(ctx); err != nil {
+				return nil, 0, fmt.Errorf("committing transaction: %w", err)
+			}
+			return &user, store.ResultLinkedToExisting, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, fmt.Errorf("looking up user by phone: %w", err)
+		}
+	}
+
+	// If email matched but was unverified and no phone match was found, report the conflict.
+	if unverifiedEmailConflict {
+		return nil, 0, store.ErrUnverifiedEmailConflict
+	}
+
+	// No match — create new user + link.
+	newUser := store.User{
+		ID:          uuid.New(),
+		Email:       email,
+		Phone:       phone,
+		DisplayName: displayName,
+		AvatarURL:   avatarURL,
+	}
 	now := time.Now()
+	newUser.CreatedAt = now
+	newUser.UpdatedAt = now
+
 	_, err = tx.Exec(ctx,
-		`INSERT INTO oauth_accounts
-		 (provider, provider_user_id, user_id, email, display_name, avatar_url,
-		  access_token, refresh_token, expires_at, linked_at, updated_at)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		acct.Provider, acct.ProviderUserID, user.ID, acct.Email, acct.DisplayName, acct.AvatarURL,
-		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt, now, now,
+		`INSERT INTO users (id, email, phone, display_name, avatar_url, created_at, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7)`,
+		newUser.ID, newUser.Email, newUser.Phone, newUser.DisplayName, newUser.AvatarURL, newUser.CreatedAt, newUser.UpdatedAt,
 	)
 	if err != nil {
-		return nil, false, fmt.Errorf("linking oauth account: %w", err)
+		return nil, 0, fmt.Errorf("creating user: %w", err)
 	}
 
+	if err := s.insertOAuthAccountTx(ctx, tx, acct, newUser.ID); err != nil {
+		return nil, 0, err
+	}
 	if err := tx.Commit(ctx); err != nil {
-		return nil, false, fmt.Errorf("committing transaction: %w", err)
+		return nil, 0, fmt.Errorf("committing transaction: %w", err)
+	}
+	return &newUser, store.ResultCreatedNewUser, nil
+}
+
+// insertOAuthAccountTx inserts an oauth_account row within a transaction.
+func (s *Store) insertOAuthAccountTx(ctx context.Context, tx pgx.Tx, acct *store.OAuthAccount, userID uuid.UUID) error {
+	now := time.Now()
+	_, err := tx.Exec(ctx,
+		`INSERT INTO oauth_accounts
+		 (provider, provider_user_id, user_id, email, display_name, avatar_url,
+		  access_token, refresh_token, expires_at, email_verified, linked_at, updated_at)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		acct.Provider, acct.ProviderUserID, userID, acct.Email, acct.DisplayName, acct.AvatarURL,
+		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt, acct.EmailVerified, now, now,
+	)
+	if err != nil {
+		return fmt.Errorf("linking oauth account: %w", err)
+	}
+	return nil
+}
+
+// LinkOAuthAccount links an OAuth identity to an authenticated user.
+// Returns ErrProviderAlreadyLinked if the provider account is linked to a different user.
+func (s *Store) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *store.OAuthAccount) error {
+	// Check if this provider account is already linked to someone.
+	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
+	if err == nil {
+		if existing.UserID == userID {
+			// Already linked to this user — update tokens.
+			existing.AccessToken = acct.AccessToken
+			existing.RefreshToken = acct.RefreshToken
+			existing.ExpiresAt = acct.ExpiresAt
+			existing.Email = acct.Email
+			existing.DisplayName = acct.DisplayName
+			existing.AvatarURL = acct.AvatarURL
+			existing.EmailVerified = acct.EmailVerified
+			return s.UpdateOAuthAccount(ctx, existing)
+		}
+		return store.ErrProviderAlreadyLinked
+	}
+	if !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("checking existing link: %w", err)
 	}
 
-	return &user, created, nil
+	acct.UserID = userID
+	return s.CreateOAuthAccount(ctx, acct)
+}
+
+// CountOAuthAccounts returns the number of linked OAuth accounts for a user.
+func (s *Store) CountOAuthAccounts(ctx context.Context, userID uuid.UUID) (int, error) {
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*) FROM oauth_accounts WHERE user_id = $1`, userID,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting oauth accounts: %w", err)
+	}
+	return count, nil
 }

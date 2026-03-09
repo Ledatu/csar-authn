@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Ledatu/csar-authn/internal/config"
-	"github.com/Ledatu/csar-core/jwtx"
+	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-core/jwtx"
 	"github.com/golang-jwt/jwt/v5"
 )
 

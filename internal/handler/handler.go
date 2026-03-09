@@ -5,15 +5,16 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/google/uuid"
 
-	"github.com/Ledatu/csar-authn/internal/config"
-	"github.com/Ledatu/csar-authn/internal/oauth"
-	"github.com/Ledatu/csar-authn/internal/session"
-	"github.com/Ledatu/csar-authn/internal/store"
-	"github.com/Ledatu/csar-authn/internal/sts"
+	"github.com/ledatu/csar-core/httpx"
+
+	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/oauth"
+	"github.com/ledatu/csar-authn/internal/session"
+	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-authn/internal/sts"
 )
 
 // Handler holds dependencies for HTTP handlers.
@@ -41,7 +42,7 @@ func New(st store.Store, sessionMgr *session.Manager, oauthMgr *oauth.Manager, s
 
 // RegisterRoutes sets up all HTTP routes on the given mux.
 func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
-	cookieSameSite := parseSameSite(h.cfg.Cookie.SameSite)
+	cookieSameSite := httpx.ParseSameSite(h.cfg.Cookie.SameSite)
 
 	// OAuth login initiation: GET /auth/{provider}
 	mux.Handle("GET /auth/{provider}", h.oauthMgr.BeginAuthHandler())
@@ -66,6 +67,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// JWKS endpoint: GET /.well-known/jwks.json
 	mux.Handle("GET /.well-known/jwks.json", session.JWKSHandler(h.sessionMgr))
 
+	// Unlink a provider: DELETE /auth/providers/{provider}
+	mux.HandleFunc("DELETE /auth/providers/{provider}", h.handleUnlinkProvider)
+
 	// Health check: GET /health
 	mux.HandleFunc("GET /health", h.handleHealth)
 
@@ -82,7 +86,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 		Path:     "/",
 		HttpOnly: true,
 		Secure:   h.cfg.Cookie.Secure,
-		SameSite: parseSameSite(h.cfg.Cookie.SameSite),
+		SameSite: httpx.ParseSameSite(h.cfg.Cookie.SameSite),
 		MaxAge:   -1, // delete immediately
 	})
 	w.WriteHeader(http.StatusNoContent)
@@ -124,14 +128,16 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type linkedAccount struct {
-		Provider    string `json:"provider"`
-		DisplayName string `json:"display_name,omitempty"`
-		Email       string `json:"email,omitempty"`
+		Provider      string `json:"provider"`
+		DisplayName   string `json:"display_name,omitempty"`
+		Email         string `json:"email,omitempty"`
+		EmailVerified bool   `json:"email_verified"`
 	}
 
 	type meResponse struct {
 		ID          string          `json:"id"`
-		Email       string          `json:"email"`
+		Email       string          `json:"email,omitempty"`
+		Phone       string          `json:"phone,omitempty"`
 		DisplayName string          `json:"display_name"`
 		AvatarURL   string          `json:"avatar_url,omitempty"`
 		Accounts    []linkedAccount `json:"linked_accounts,omitempty"`
@@ -140,14 +146,16 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	resp := meResponse{
 		ID:          user.ID.String(),
 		Email:       user.Email,
+		Phone:       user.Phone,
 		DisplayName: user.DisplayName,
 		AvatarURL:   user.AvatarURL,
 	}
 	for _, a := range accounts {
 		resp.Accounts = append(resp.Accounts, linkedAccount{
-			Provider:    a.Provider,
-			DisplayName: a.DisplayName,
-			Email:       a.Email,
+			Provider:      a.Provider,
+			DisplayName:   a.DisplayName,
+			Email:         a.Email,
+			EmailVerified: a.EmailVerified,
 		})
 	}
 
@@ -155,18 +163,54 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(resp)
 }
 
+func (h *Handler) handleUnlinkProvider(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(h.cfg.Cookie.Name)
+	if err != nil {
+		http.Error(w, "not authenticated", http.StatusUnauthorized)
+		return
+	}
+
+	claims, err := h.sessionMgr.VerifyToken(cookie.Value)
+	if err != nil {
+		http.Error(w, "invalid session", http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := uuid.Parse(claims.Sub)
+	if err != nil {
+		http.Error(w, "invalid session", http.StatusUnauthorized)
+		return
+	}
+
+	provider := r.PathValue("provider")
+	if provider == "" {
+		http.Error(w, "missing provider", http.StatusBadRequest)
+		return
+	}
+
+	// Guard: cannot unlink the last provider.
+	count, err := h.store.CountOAuthAccounts(r.Context(), userID)
+	if err != nil {
+		h.logger.Error("failed to count oauth accounts", "user_id", userID, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if count <= 1 {
+		http.Error(w, "cannot unlink the last provider", http.StatusBadRequest)
+		return
+	}
+
+	if err := h.store.DeleteOAuthAccount(r.Context(), provider, userID); err != nil {
+		h.logger.Error("failed to unlink provider", "user_id", userID, "provider", provider, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	h.logger.Info("provider unlinked", "user_id", userID, "provider", provider)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Write([]byte(`{"status":"ok"}`))
-}
-
-func parseSameSite(s string) http.SameSite {
-	switch strings.ToLower(s) {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "none":
-		return http.SameSiteNoneMode
-	default:
-		return http.SameSiteLaxMode
-	}
 }

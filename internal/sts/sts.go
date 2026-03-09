@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Ledatu/csar-authn/internal/config"
-	"github.com/Ledatu/csar-authn/internal/session"
-	"github.com/Ledatu/csar-core/jwtx"
+	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/session"
+	"github.com/ledatu/csar-core/jwtx"
 )
 
 const clockSkew = 30 * time.Second

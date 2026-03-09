@@ -6,7 +6,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/Ledatu/csar-core/configutil"
+	"github.com/ledatu/csar-core/configutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -70,6 +70,7 @@ type ProviderConfig struct {
 	ClientSecret string   `yaml:"client_secret"`
 	CallbackURL  string   `yaml:"callback_url"`
 	Scopes       []string `yaml:"scopes"`
+	Trusted      bool     `yaml:"trusted"` // provider always returns verified emails
 }
 
 // CookieConfig controls the session cookie parameters.

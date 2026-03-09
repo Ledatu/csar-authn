@@ -19,8 +19,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Ledatu/csar-authn/internal/config"
-	"github.com/Ledatu/csar-authn/internal/session"
+	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/session"
 )
 
 var jtiCounter atomic.Int64

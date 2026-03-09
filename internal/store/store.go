@@ -14,13 +14,25 @@ import (
 
 // Sentinel errors returned by Store implementations.
 var (
-	ErrNotFound = errors.New("not found")
+	ErrNotFound                = errors.New("not found")
+	ErrUnverifiedEmailConflict = errors.New("email matches existing user but provider email is not verified")
+	ErrProviderAlreadyLinked   = errors.New("provider account is already linked to another user")
+)
+
+// FindOrCreateResult indicates the outcome of FindOrCreateUser.
+type FindOrCreateResult int
+
+const (
+	ResultExistingLogin    FindOrCreateResult = iota // Existing oauth link, user logged in
+	ResultLinkedToExisting                            // Auto-linked to existing user via verified email
+	ResultCreatedNewUser                              // Brand new user + oauth link created
 )
 
 // User represents an authenticated user with a stable internal UUID.
 type User struct {
 	ID          uuid.UUID
 	Email       string
+	Phone       string
 	DisplayName string
 	AvatarURL   string
 	CreatedAt   time.Time
@@ -38,6 +50,7 @@ type OAuthAccount struct {
 	AccessToken    string
 	RefreshToken   string
 	ExpiresAt      *time.Time
+	EmailVerified  bool
 	LinkedAt       time.Time
 	UpdatedAt      time.Time
 }
@@ -76,14 +89,24 @@ type Store interface {
 	// DeleteOAuthAccount removes a linked account.
 	DeleteOAuthAccount(ctx context.Context, provider string, userID uuid.UUID) error
 
+	// GetUserByPhone returns a user by phone number.
+	// Returns ErrNotFound if no user with that phone exists.
+	GetUserByPhone(ctx context.Context, phone string) (*User, error)
+
 	// FindOrCreateUser atomically performs the lookup-or-create flow:
 	//  1. Check oauth_accounts for (provider, provider_user_id)
 	//  2. If found, update tokens and return the linked user
-	//  3. If not found, check users by email
-	//  4. If user exists, create the oauth_account link
-	//  5. If no user, create user + oauth_account in a transaction
-	// Returns the user and whether it was newly created.
-	FindOrCreateUser(ctx context.Context, acct *OAuthAccount, email, displayName, avatarURL string) (*User, bool, error)
+	//  3. If email non-empty, check users by email; auto-link if verified
+	//  4. If phone non-empty, check users by phone; auto-link (phone is verified)
+	//  5. If no match, create user + oauth_account in a transaction
+	FindOrCreateUser(ctx context.Context, acct *OAuthAccount, email, phone, displayName, avatarURL string) (*User, FindOrCreateResult, error)
+
+	// LinkOAuthAccount links an OAuth identity to an authenticated user.
+	// Returns ErrProviderAlreadyLinked if the provider account is linked to a different user.
+	LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *OAuthAccount) error
+
+	// CountOAuthAccounts returns the number of linked OAuth accounts for a user.
+	CountOAuthAccounts(ctx context.Context, userID uuid.UUID) (int, error)
 
 	// Migrate runs schema migrations (idempotent).
 	Migrate(ctx context.Context) error

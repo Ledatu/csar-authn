@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/Ledatu/csar-core/jwtx"
+	"github.com/ledatu/csar-core/jwtx"
 )
 
 // JWKSHandler returns an http.Handler that serves the JWKS endpoint.

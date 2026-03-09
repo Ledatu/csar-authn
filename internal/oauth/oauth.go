@@ -13,15 +13,19 @@ import (
 	"github.com/markbates/goth/providers/discord"
 	"github.com/markbates/goth/providers/github"
 	"github.com/markbates/goth/providers/google"
+	oidc "github.com/markbates/goth/providers/openidConnect"
 
-	"github.com/Ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-core/httpx"
+
+	"github.com/ledatu/csar-authn/internal/config"
 )
 
 // Manager manages OAuth providers and the Goth session store.
 type Manager struct {
-	logger      *slog.Logger
-	baseURL     string
-	frontendURL string
+	logger           *slog.Logger
+	baseURL          string
+	frontendURL      string
+	trustedProviders map[string]bool
 }
 
 // NewManager initializes Goth providers from config and returns a Manager.
@@ -31,7 +35,7 @@ func NewManager(cfg *config.Config, logger *slog.Logger) (*Manager, error) {
 	store.MaxAge(300) // 5 minutes — just long enough for the OAuth round-trip
 	store.Options.HttpOnly = true
 	store.Options.Secure = cfg.Cookie.Secure
-	store.Options.SameSite = parseSameSite(cfg.Cookie.SameSite)
+	store.Options.SameSite = httpx.ParseSameSite(cfg.Cookie.SameSite)
 
 	gothic.Store = store
 
@@ -52,10 +56,18 @@ func NewManager(cfg *config.Config, logger *slog.Logger) (*Manager, error) {
 
 	goth.UseProviders(providers...)
 
+	trusted := make(map[string]bool)
+	for _, p := range cfg.OAuth.Providers {
+		if p.Trusted {
+			trusted[strings.ToLower(p.Name)] = true
+		}
+	}
+
 	return &Manager{
-		logger:      logger,
-		baseURL:     cfg.BaseURL,
-		frontendURL: cfg.FrontendURL,
+		logger:           logger,
+		baseURL:          cfg.BaseURL,
+		frontendURL:      cfg.FrontendURL,
+		trustedProviders: trusted,
 	}, nil
 }
 
@@ -64,8 +76,15 @@ func (m *Manager) FrontendURL() string {
 	return m.frontendURL
 }
 
+// IsTrusted returns whether the provider is configured as trusted
+// (i.e. always returns verified emails).
+func (m *Manager) IsTrusted(provider string) bool {
+	return m.trustedProviders[strings.ToLower(provider)]
+}
+
 // BeginAuthHandler returns an http.Handler that initiates the OAuth flow.
 // The provider name is extracted from the URL path: /auth/{provider}
+// Accepts an optional ?intent=link query parameter for explicit account linking.
 func (m *Manager) BeginAuthHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		provider := extractProvider(r)
@@ -78,6 +97,14 @@ func (m *Manager) BeginAuthHandler() http.Handler {
 		q := r.URL.Query()
 		q.Set("provider", provider)
 		r.URL.RawQuery = q.Encode()
+
+		// Store intent (login or link) in the Goth session for retrieval in callback.
+		intent := r.URL.Query().Get("intent")
+		if intent == "link" {
+			if err := gothic.StoreInSession("intent", "link", r, w); err != nil {
+				m.logger.Error("failed to store intent in session", "error", err)
+			}
+		}
 
 		gothic.BeginAuthHandler(w, r)
 	})
@@ -106,6 +133,27 @@ func createProvider(cfg config.ProviderConfig, callbackURL string) (goth.Provide
 		}
 		return discord.New(cfg.ClientID, cfg.ClientSecret, callbackURL, scopes...), nil
 
+	case "telegram":
+		scopes := cfg.Scopes
+		if len(scopes) == 0 {
+			scopes = []string{"openid", "profile", "phone"}
+		}
+		p, err := oidc.NewNamed(
+			"telegram",
+			cfg.ClientID,
+			cfg.ClientSecret,
+			callbackURL,
+			"https://oauth.telegram.org/.well-known/openid-configuration",
+			scopes...,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("initializing telegram OIDC: %w", err)
+		}
+		p.SkipUserInfoRequest = true
+		// NewNamed formats the name as "telegram-oidc"; override to match our URL routing.
+		p.SetName("telegram")
+		return p, nil
+
 	default:
 		return nil, fmt.Errorf("unsupported provider: %s", cfg.Name)
 	}
@@ -120,15 +168,4 @@ func extractProvider(r *http.Request) string {
 		return ""
 	}
 	return parts[0]
-}
-
-func parseSameSite(s string) http.SameSite {
-	switch strings.ToLower(s) {
-	case "strict":
-		return http.SameSiteStrictMode
-	case "none":
-		return http.SameSiteNoneMode
-	default:
-		return http.SameSiteLaxMode
-	}
 }

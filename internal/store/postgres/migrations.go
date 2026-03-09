@@ -65,6 +65,22 @@ ALTER TABLE sts_jti_log DROP CONSTRAINT IF EXISTS sts_jti_log_pkey;
 ALTER TABLE sts_jti_log ADD PRIMARY KEY (issuer, jti);
 `,
 	},
+	{
+		name: "004_account_linking",
+		up: `
+ALTER TABLE oauth_accounts ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT false;
+`,
+	},
+	{
+		name: "005_telegram_support",
+		up: `
+ALTER TABLE users ALTER COLUMN email DROP NOT NULL;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+DROP INDEX IF EXISTS idx_users_email_lower;
+CREATE UNIQUE INDEX idx_users_email_lower ON users (lower(email)) WHERE email IS NOT NULL AND email != '';
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users (phone) WHERE phone IS NOT NULL AND phone != '';
+`,
+	},
 }
 
 // runMigrations creates a migrations tracking table and applies pending migrations.

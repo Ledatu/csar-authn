@@ -1,13 +1,13 @@
-module github.com/Ledatu/csar-authn
+module github.com/ledatu/csar-authn
 
 go 1.25.0
 
 require (
-	github.com/Ledatu/csar-core v0.1.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
 	github.com/jackc/pgx/v5 v5.7.4
+	github.com/ledatu/csar-core v0.1.2
 	github.com/markbates/goth v1.80.0
 	github.com/redis/go-redis/v9 v9.18.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -42,9 +42,9 @@ require (
 	golang.org/x/crypto v0.31.0 // indirect
 	golang.org/x/oauth2 v0.17.0 // indirect
 	golang.org/x/sync v0.19.0 // indirect
-	golang.org/x/text v0.21.0 // indirect
+	golang.org/x/text v0.32.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
-	google.golang.org/protobuf v1.32.0 // indirect
+	google.golang.org/protobuf v1.36.10 // indirect
 )
 
-replace github.com/Ledatu/csar-core => ../csar-core
+replace github.com/ledatu/csar-core => ../csar-core

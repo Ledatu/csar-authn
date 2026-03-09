@@ -16,14 +16,16 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ledatu/csar-authn/internal/config"
-	"github.com/Ledatu/csar-authn/internal/configsource"
-	"github.com/Ledatu/csar-authn/internal/handler"
-	"github.com/Ledatu/csar-authn/internal/oauth"
-	"github.com/Ledatu/csar-authn/internal/session"
-	"github.com/Ledatu/csar-authn/internal/store"
-	"github.com/Ledatu/csar-authn/internal/store/postgres"
-	"github.com/Ledatu/csar-authn/internal/sts"
+	"github.com/ledatu/csar-core/configload"
+	"github.com/ledatu/csar-core/configsource"
+
+	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/handler"
+	"github.com/ledatu/csar-authn/internal/oauth"
+	"github.com/ledatu/csar-authn/internal/session"
+	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-authn/internal/store/postgres"
+	"github.com/ledatu/csar-authn/internal/sts"
 
 	"github.com/redis/go-redis/v9"
 )
@@ -80,7 +82,7 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	cfg, err := configsource.LoadInitial(ctx, &p, logger)
+	cfg, err := configload.LoadInitial(ctx, &p, logger, config.LoadFromBytes)
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -153,9 +155,14 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 		if err != nil {
 			return fmt.Errorf("building config source for watcher: %w", err)
 		}
-		watcher := configsource.NewConfigWatcher(
+		validate := func(data []byte) error {
+			_, err := config.LoadFromBytes(data)
+			return err
+		}
+		watcher := configload.NewValidatingWatcher(
 			src,
 			logger.With("component", "config_watcher"),
+			validate,
 			configsource.WithHashPolicy(configsource.HashTOFU),
 		)
 		go watcher.RunPeriodicWatch(ctx, interval)
