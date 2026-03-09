@@ -5,8 +5,6 @@ package sts
 
 import (
 	"crypto"
-	"crypto/ed25519"
-	"crypto/rsa"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
@@ -20,6 +18,7 @@ import (
 
 	"github.com/Ledatu/csar-authn/internal/config"
 	"github.com/Ledatu/csar-authn/internal/session"
+	"github.com/Ledatu/csar-core/jwtx"
 )
 
 const clockSkew = 30 * time.Second
@@ -56,7 +55,7 @@ func New(stsCfg config.STSConfig, jwtCfg config.JWTConfig, sessionMgr *session.M
 			return nil, fmt.Errorf("loading public key for SA %q: %w", name, err)
 		}
 
-		alg, err := detectAlgorithm(pubKey)
+		alg, err := jwtx.DetectAlgorithm(pubKey)
 		if err != nil {
 			return nil, fmt.Errorf("SA %q: %w", name, err)
 		}
@@ -267,39 +266,24 @@ func loadPublicKey(saCfg config.ServiceAccountConfig) (crypto.PublicKey, error) 
 	return pub, nil
 }
 
-// detectAlgorithm returns the JWT algorithm name for the given public key type.
-func detectAlgorithm(pub crypto.PublicKey) (string, error) {
-	switch pub.(type) {
-	case *rsa.PublicKey:
-		return "RS256", nil
-	case ed25519.PublicKey:
-		return "EdDSA", nil
-	default:
-		return "", fmt.Errorf("unsupported public key type: %T", pub)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // JWT assertion parsing and verification
 // ---------------------------------------------------------------------------
 
-// assertionHeader represents the JWT header of an incoming assertion.
 type assertionHeader struct {
 	Alg string `json:"alg"`
 	Typ string `json:"typ"`
 }
 
-// assertionClaims represents the JWT payload of an incoming assertion.
 type assertionClaims struct {
-	Iss string `json:"iss"` // service account name
-	Aud string `json:"aud"` // must match csar-authn's issuer
+	Iss string `json:"iss"`
+	Aud string `json:"aud"`
 	Exp int64  `json:"exp"`
 	Nbf int64  `json:"nbf"`
 	Iat int64  `json:"iat"`
-	Jti string `json:"jti"` // unique ID for replay prevention
+	Jti string `json:"jti"`
 }
 
-// extractIssuer pre-parses a JWT payload to get the "iss" claim without verification.
 func extractIssuer(tokenStr string) (string, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
@@ -321,15 +305,12 @@ func extractIssuer(tokenStr string) (string, error) {
 	return c.Iss, nil
 }
 
-// parseAndVerifyAssertion fully parses, verifies the signature, and validates
-// claims of an incoming JWT assertion.
 func parseAndVerifyAssertion(tokenStr string, sa *serviceAccount, expectedAud string) (*assertionClaims, error) {
 	parts := strings.SplitN(tokenStr, ".", 3)
 	if len(parts) != 3 {
 		return nil, fmt.Errorf("malformed JWT: expected 3 parts, got %d", len(parts))
 	}
 
-	// Decode and validate header.
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
 		return nil, fmt.Errorf("decoding header: %w", err)
@@ -342,7 +323,6 @@ func parseAndVerifyAssertion(tokenStr string, sa *serviceAccount, expectedAud st
 		return nil, fmt.Errorf("algorithm mismatch: header %q, expected %q", header.Alg, sa.Algorithm)
 	}
 
-	// Decode payload.
 	payloadBytes, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
 		return nil, fmt.Errorf("decoding payload: %w", err)
@@ -352,17 +332,15 @@ func parseAndVerifyAssertion(tokenStr string, sa *serviceAccount, expectedAud st
 		return nil, fmt.Errorf("parsing claims: %w", err)
 	}
 
-	// Verify signature.
 	signingInput := []byte(parts[0] + "." + parts[1])
 	sigBytes, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
 		return nil, fmt.Errorf("decoding signature: %w", err)
 	}
-	if err := verifySignature(signingInput, sigBytes, sa.PublicKey, sa.Algorithm); err != nil {
+	if err := jwtx.VerifyWithKeyRaw(signingInput, sigBytes, sa.PublicKey, sa.Algorithm); err != nil {
 		return nil, fmt.Errorf("assertion signature invalid: %w", err)
 	}
 
-	// Validate time-based claims.
 	now := time.Now()
 	if claims.Exp == 0 || now.After(time.Unix(claims.Exp, 0).Add(clockSkew)) {
 		return nil, fmt.Errorf("assertion expired")
@@ -370,40 +348,11 @@ func parseAndVerifyAssertion(tokenStr string, sa *serviceAccount, expectedAud st
 	if claims.Nbf != 0 && now.Before(time.Unix(claims.Nbf, 0).Add(-clockSkew)) {
 		return nil, fmt.Errorf("assertion not yet valid (nbf)")
 	}
-
-	// Validate audience — must match csar-authn's own issuer.
 	if claims.Aud != expectedAud {
 		return nil, fmt.Errorf("audience mismatch: got %q, expected %q", claims.Aud, expectedAud)
 	}
 
 	return &claims, nil
-}
-
-// verifySignature verifies a JWT signature using the given public key and algorithm.
-func verifySignature(signingInput, signature []byte, pub crypto.PublicKey, alg string) error {
-	switch alg {
-	case "RS256":
-		rsaPub, ok := pub.(*rsa.PublicKey)
-		if !ok {
-			return fmt.Errorf("expected RSA public key, got %T", pub)
-		}
-		h := crypto.SHA256.New()
-		h.Write(signingInput)
-		return rsa.VerifyPKCS1v15(rsaPub, crypto.SHA256, h.Sum(nil), signature)
-
-	case "EdDSA":
-		edPub, ok := pub.(ed25519.PublicKey)
-		if !ok {
-			return fmt.Errorf("expected Ed25519 public key, got %T", pub)
-		}
-		if !ed25519.Verify(edPub, signingInput, signature) {
-			return fmt.Errorf("Ed25519 signature invalid")
-		}
-		return nil
-
-	default:
-		return fmt.Errorf("unsupported algorithm: %s", alg)
-	}
 }
 
 // ---------------------------------------------------------------------------
