@@ -67,7 +67,7 @@ func newTestEnv(t *testing.T) *testEnv {
 	jwtCfg := config.JWTConfig{
 		Issuer:   testIssuer,
 		Audience: "test-audience",
-		TTL:      config.Duration(time.Hour),
+		TTL:      config.NewDuration(time.Hour),
 	}
 	mgr := session.NewManager(kp, jwtCfg)
 

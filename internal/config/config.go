@@ -4,9 +4,9 @@ package config
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"time"
 
+	"github.com/Ledatu/csar-core/configutil"
 	"gopkg.in/yaml.v3"
 )
 
@@ -87,24 +87,12 @@ type RedisConfig struct {
 	DB       int    `yaml:"db"`       // database number, default 0
 }
 
-// Duration wraps time.Duration for YAML unmarshalling from strings like "24h".
-type Duration time.Duration
+// Duration is a type alias for the shared configutil.Duration.
+type Duration = configutil.Duration
 
-func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
-	var s string
-	if err := value.Decode(&s); err != nil {
-		return err
-	}
-	dur, err := time.ParseDuration(s)
-	if err != nil {
-		return fmt.Errorf("invalid duration %q: %w", s, err)
-	}
-	*d = Duration(dur)
-	return nil
-}
-
-func (d Duration) Std() time.Duration {
-	return time.Duration(d)
+// NewDuration wraps a time.Duration in a configutil.Duration.
+func NewDuration(d time.Duration) Duration {
+	return Duration{Duration: d}
 }
 
 // Load reads and parses a YAML config file, expanding environment variables.
@@ -133,8 +121,8 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	if cfg.JWT.Algorithm == "" {
 		cfg.JWT.Algorithm = "RS256"
 	}
-	if cfg.JWT.TTL == 0 {
-		cfg.JWT.TTL = Duration(24 * time.Hour)
+	if cfg.JWT.TTL.Duration == 0 {
+		cfg.JWT.TTL = NewDuration(24 * time.Hour)
 	}
 	if cfg.JWT.KeyDir == "" {
 		cfg.JWT.KeyDir = "./keys"
@@ -148,8 +136,8 @@ func LoadFromBytes(data []byte) (*Config, error) {
 	if cfg.Database.Driver == "" {
 		cfg.Database.Driver = "postgres"
 	}
-	if cfg.STS.Enabled && cfg.STS.AssertionMaxAge == 0 {
-		cfg.STS.AssertionMaxAge = Duration(5 * time.Minute)
+	if cfg.STS.Enabled && cfg.STS.AssertionMaxAge.Duration == 0 {
+		cfg.STS.AssertionMaxAge = NewDuration(5 * time.Minute)
 	}
 
 	if err := cfg.validate(); err != nil {
@@ -210,25 +198,8 @@ func (c *Config) validate() error {
 	return nil
 }
 
-var envVarRe = regexp.MustCompile(`\$\{([^}]+)\}|\$([A-Za-z_][A-Za-z0-9_]*)`)
-
 func expandEnv(s string) string {
-	return envVarRe.ReplaceAllStringFunc(s, func(match string) string {
-		// ${VAR} form
-		if len(match) > 3 && match[0] == '$' && match[1] == '{' {
-			name := match[2 : len(match)-1]
-			if v, ok := os.LookupEnv(name); ok {
-				return v
-			}
-			return match // leave unexpanded if not set
-		}
-		// $VAR form
-		name := match[1:]
-		if v, ok := os.LookupEnv(name); ok {
-			return v
-		}
-		return match
-	})
+	return configutil.SafeExpandEnv(s)
 }
 
 func expandEnvInConfig(cfg *Config) {
