@@ -13,7 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/Ledatu/csar-auth/internal/store"
+	"github.com/Ledatu/csar-authn/internal/store"
 )
 
 // Store implements store.Store backed by PostgreSQL.

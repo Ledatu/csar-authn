@@ -11,19 +11,19 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/Ledatu/csar-auth/internal/config"
+	"github.com/Ledatu/csar-authn/internal/config"
 )
 
 // Claims represents the JWT payload issued by csar-auth.
 type Claims struct {
 	Sub         string `json:"sub"`                    // user UUID
-	Email       string `json:"email,omitempty"`         // user email
-	DisplayName string `json:"display_name,omitempty"`  // user display name
-	Iss         string `json:"iss"`                     // issuer
-	Aud         string `json:"aud"`                     // audience
-	Exp         int64  `json:"exp"`                     // expiration (Unix)
-	Iat         int64  `json:"iat"`                     // issued at (Unix)
-	Nbf         int64  `json:"nbf"`                     // not before (Unix)
+	Email       string `json:"email,omitempty"`        // user email
+	DisplayName string `json:"display_name,omitempty"` // user display name
+	Iss         string `json:"iss"`                    // issuer
+	Aud         string `json:"aud"`                    // audience
+	Exp         int64  `json:"exp"`                    // expiration (Unix)
+	Iat         int64  `json:"iat"`                    // issued at (Unix)
+	Nbf         int64  `json:"nbf"`                    // not before (Unix)
 }
 
 // Manager handles JWT token signing.

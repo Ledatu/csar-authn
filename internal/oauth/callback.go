@@ -6,8 +6,8 @@ import (
 
 	"github.com/markbates/goth/gothic"
 
-	"github.com/Ledatu/csar-auth/internal/session"
-	"github.com/Ledatu/csar-auth/internal/store"
+	"github.com/Ledatu/csar-authn/internal/session"
+	"github.com/Ledatu/csar-authn/internal/store"
 )
 
 // CallbackHandler returns an http.Handler that completes the OAuth flow,

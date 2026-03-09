@@ -9,11 +9,11 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/Ledatu/csar-auth/internal/config"
-	"github.com/Ledatu/csar-auth/internal/oauth"
-	"github.com/Ledatu/csar-auth/internal/session"
-	"github.com/Ledatu/csar-auth/internal/store"
-	"github.com/Ledatu/csar-auth/internal/sts"
+	"github.com/Ledatu/csar-authn/internal/config"
+	"github.com/Ledatu/csar-authn/internal/oauth"
+	"github.com/Ledatu/csar-authn/internal/session"
+	"github.com/Ledatu/csar-authn/internal/store"
+	"github.com/Ledatu/csar-authn/internal/sts"
 )
 
 // Handler holds dependencies for HTTP handlers.

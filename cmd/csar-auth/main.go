@@ -16,14 +16,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/Ledatu/csar-auth/internal/config"
-	"github.com/Ledatu/csar-auth/internal/configsource"
-	"github.com/Ledatu/csar-auth/internal/handler"
-	"github.com/Ledatu/csar-auth/internal/oauth"
-	"github.com/Ledatu/csar-auth/internal/session"
-	"github.com/Ledatu/csar-auth/internal/store"
-	"github.com/Ledatu/csar-auth/internal/store/postgres"
-	"github.com/Ledatu/csar-auth/internal/sts"
+	"github.com/Ledatu/csar-authn/internal/config"
+	"github.com/Ledatu/csar-authn/internal/configsource"
+	"github.com/Ledatu/csar-authn/internal/handler"
+	"github.com/Ledatu/csar-authn/internal/oauth"
+	"github.com/Ledatu/csar-authn/internal/session"
+	"github.com/Ledatu/csar-authn/internal/store"
+	"github.com/Ledatu/csar-authn/internal/store/postgres"
+	"github.com/Ledatu/csar-authn/internal/sts"
 
 	"github.com/redis/go-redis/v9"
 )

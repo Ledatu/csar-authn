@@ -145,8 +145,8 @@ Tokens issued by `csar-auth` include the following standard claims:
 ## Project Structure
 
 ```
-csar-auth/
-├── cmd/csar-auth/      # main package — wires dependencies and starts the server
+csar-authn/
+├── cmd/csar-authn/      # main package — wires dependencies and starts the server
 ├── internal/
 │   ├── config/         # YAML config loading
 │   ├── handler/        # HTTP route handlers

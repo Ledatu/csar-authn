@@ -13,7 +13,7 @@ import (
 	"github.com/Ledatu/csar-core/secret"
 	"github.com/Ledatu/csar-core/ycloud"
 
-	"github.com/Ledatu/csar-auth/internal/config"
+	"github.com/Ledatu/csar-authn/internal/config"
 )
 
 // Re-export core types for convenience.
@@ -70,7 +70,7 @@ func BuildSource(p SourceParams, logger *slog.Logger) (ConfigSource, error) {
 		if p.S3Bucket == "" {
 			return nil, fmt.Errorf("--config-s3-bucket / CONFIG_S3_BUCKET is required for s3 source")
 		}
-		client, err := s3store.NewClient(s3store.Config{
+		client, err := s3store.NewClient(&s3store.Config{
 			Bucket:   p.S3Bucket,
 			Endpoint: p.S3Endpoint,
 			Region:   p.S3Region,

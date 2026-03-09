@@ -76,11 +76,11 @@ cookie:
 #   assertion_max_age: "5m"    # max age of incoming assertion JWTs
 #   service_accounts:
 #     first-sa:
-#       public_key_file: "/etc/csar-auth/keys/first-sa.pub"
+#       public_key_file: "/etc/csar-authn/keys/first-sa.pub"
 #       allowed_audiences: ["first"]
 #       allow_all_audiences: false  # UNSAFE for production with >1 audience; prefer explicit per-request audience
 #       token_ttl: "1h"
 #     second-sa:
-#       public_key_file: "/etc/csar-auth/keys/second-sa.pub"
+#       public_key_file: "/etc/csar-authn/keys/second-sa.pub"
 #       allowed_audiences: ["second"]
 #       token_ttl: "30m"
