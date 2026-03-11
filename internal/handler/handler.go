@@ -72,9 +72,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Unlink a provider: DELETE /auth/providers/{provider}
 	mux.HandleFunc("DELETE /auth/providers/{provider}", h.handleUnlinkProvider)
 
-	// Health check: GET /health
-	mux.HandleFunc("GET /health", h.handleHealth)
-
 	// STS token exchange: POST /sts/token (optional).
 	if h.stsHandler != nil {
 		mux.Handle("POST /sts/token", h.stsHandler)
@@ -218,7 +215,3 @@ func (h *Handler) handleUnlinkProvider(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (h *Handler) handleHealth(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(`{"status":"ok"}`))
-}

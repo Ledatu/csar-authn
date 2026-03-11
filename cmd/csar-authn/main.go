@@ -12,12 +12,19 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
+
+	"go.opentelemetry.io/otel"
 
 	"github.com/ledatu/csar-core/configload"
 	"github.com/ledatu/csar-core/configsource"
+	"github.com/ledatu/csar-core/gatewayctx"
+	"github.com/ledatu/csar-core/health"
+	"github.com/ledatu/csar-core/httpmiddleware"
+	"github.com/ledatu/csar-core/httpserver"
+	"github.com/ledatu/csar-core/logutil"
+	"github.com/ledatu/csar-core/observe"
+	"github.com/ledatu/csar-core/tlsx"
 
 	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-authn/internal/handler"
@@ -30,20 +37,24 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// Version is set at build time via ldflags.
+var Version = "dev"
+
 func main() {
-	csrcParams, refreshInterval := parseFlags()
+	srcParams, refreshInterval, metricsAddr, otlpEndpoint, otlpInsecure := parseFlags()
 
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
+	inner := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
 		Level: slog.LevelInfo,
-	}))
+	})
+	logger := slog.New(logutil.NewRedactingHandler(inner))
 
-	if err := run(csrcParams, refreshInterval, logger); err != nil {
+	if err := run(srcParams, refreshInterval, metricsAddr, otlpEndpoint, otlpInsecure, logger); err != nil {
 		logger.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func parseFlags() (configsource.SourceParams, string) {
+func parseFlags() (configsource.SourceParams, string, string, string, bool) {
 	p := configsource.SourceParams{
 		Source:        envOrDefault("CONFIG_SOURCE", "file"),
 		File:          envOrDefault("CONFIG_FILE", "config.yaml"),
@@ -59,6 +70,9 @@ func parseFlags() (configsource.SourceParams, string) {
 		S3SAKeyFile:   envOrDefault("CONFIG_S3_SA_KEY_FILE", ""),
 	}
 	refreshInterval := envOrDefault("CONFIG_REFRESH_INTERVAL", "0")
+	metricsAddr := ""
+	otlpEndpoint := ""
+	otlpInsecure := false
 
 	flag.StringVar(&p.Source, "config-source", p.Source, `config source: "file" or "s3"`)
 	flag.StringVar(&p.File, "config", p.File, "path to config file (file source)")
@@ -73,12 +87,20 @@ func parseFlags() (configsource.SourceParams, string) {
 	flag.StringVar(&p.S3OAuthToken, "config-s3-oauth-token", p.S3OAuthToken, "S3 OAuth token")
 	flag.StringVar(&p.S3SAKeyFile, "config-s3-sa-key-file", p.S3SAKeyFile, "S3 service account key file")
 	flag.StringVar(&refreshInterval, "config-refresh-interval", refreshInterval, "config polling interval (e.g. 60s); 0 disables")
+	flag.StringVar(&metricsAddr, "metrics-addr", metricsAddr, "Prometheus metrics listen address (empty to disable)")
+	flag.StringVar(&otlpEndpoint, "otlp-endpoint", otlpEndpoint, "OTLP gRPC endpoint for tracing (empty to disable)")
+	flag.BoolVar(&otlpInsecure, "otlp-insecure", otlpInsecure, "use insecure connection for OTLP")
 
 	flag.Parse()
-	return p, refreshInterval
+	return p, refreshInterval, metricsAddr, otlpEndpoint, otlpInsecure
 }
 
-func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logger) error {
+func run(
+	p configsource.SourceParams,
+	refreshInterval, metricsAddr, otlpEndpoint string,
+	otlpInsecure bool,
+	logger *slog.Logger,
+) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -92,6 +114,26 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 		"providers", len(cfg.OAuth.Providers),
 	)
 
+	// Use config-level metrics_addr if CLI flag is empty.
+	if metricsAddr == "" {
+		metricsAddr = cfg.MetricsAddr
+	}
+
+	// --- Observability ---
+	tp, err := observe.InitTracer(ctx, observe.TraceConfig{
+		ServiceName:    "csar-authn",
+		ServiceVersion: Version,
+		Endpoint:       otlpEndpoint,
+		Insecure:       otlpInsecure,
+	})
+	if err != nil {
+		return fmt.Errorf("initializing tracer: %w", err)
+	}
+	defer tp.Close()
+
+	reg := observe.NewRegistry()
+
+	// --- Database ---
 	var st store.Store
 	switch cfg.Database.Driver {
 	case "postgres":
@@ -110,6 +152,7 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 	}
 	logger.Info("migrations applied")
 
+	// --- JWT keys ---
 	keys, err := session.LoadOrGenerateKeys(
 		cfg.JWT.Algorithm,
 		cfg.JWT.PrivateKeyFile,
@@ -149,18 +192,37 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 		logger.Info("authz client connected", "endpoint", cfg.Authz.Endpoint)
 	}
 
+	// --- Routes ---
 	mux := http.NewServeMux()
 	h := handler.New(st, sessionMgr, oauthMgr, stsHandler, authzClient, logger, cfg)
 	h.RegisterRoutes(mux)
 
-	srv := &http.Server{
-		Addr:         cfg.ListenAddr,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+	// Health and readiness endpoints.
+	mux.Handle("GET /health", health.Handler(Version))
+	rc := health.NewReadinessChecker(Version, true)
+	if pgStore, ok := st.(*postgres.Store); ok {
+		pool := pgStore.Pool()
+		rc.Register("postgres", func() health.CheckStatus {
+			if err := pool.Ping(context.Background()); err != nil {
+				return health.CheckStatus{Status: "fail", Detail: err.Error()}
+			}
+			return health.CheckStatus{Status: "ok"}
+		})
 	}
+	mux.Handle("GET /readiness", rc.Handler())
 
+	// --- Middleware ---
+	stack := httpmiddleware.Chain(
+		httpmiddleware.RequestID,
+		httpmiddleware.AccessLog(logger),
+		httpmiddleware.Recover(logger),
+		httpmiddleware.MaxBodySize(1<<20),
+		gatewayctx.Middleware,
+		observe.HTTPMiddleware(otel.GetTracerProvider(), "csar-authn"),
+	)
+	appHandler := stack(mux)
+
+	// --- Config watcher ---
 	if interval := parseInterval(refreshInterval); interval > 0 {
 		src, err := configsource.BuildSource(&p, logger)
 		if err != nil {
@@ -180,36 +242,51 @@ func run(p configsource.SourceParams, refreshInterval string, logger *slog.Logge
 		logger.Info("config watcher started (validation-only; config changes require restart)", "interval", interval)
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		logger.Info("starting server", "addr", cfg.ListenAddr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errCh <- err
-		}
-		close(errCh)
-	}()
+	// --- Metrics sidecar ---
+	if metricsAddr != "" {
+		metricsMux := http.NewServeMux()
+		metricsMux.Handle("/metrics", observe.MetricsHandler(reg))
+		metricsMux.Handle("/health", health.Handler(Version))
+		metricsMux.Handle("/readiness", rc.Handler())
 
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-
-	select {
-	case sig := <-quit:
-		logger.Info("shutting down", "signal", sig)
-	case err := <-errCh:
+		metricsSrv, err := httpserver.New(&httpserver.Config{
+			Addr:         metricsAddr,
+			Handler:      metricsMux,
+			ReadTimeout:  10 * time.Second,
+			WriteTimeout: 10 * time.Second,
+		}, logger.With("component", "metrics"))
 		if err != nil {
-			return err
+			return fmt.Errorf("creating metrics server: %w", err)
+		}
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil {
+				logger.Error("metrics server error", "error", err)
+			}
+		}()
+		logger.Info("metrics server started", "addr", metricsAddr)
+	}
+
+	// --- Main HTTP server ---
+	var tlsCfg *tlsx.ServerConfig
+	if cfg.TLS.IsEnabled() {
+		tlsCfg = &tlsx.ServerConfig{
+			CertFile:     cfg.TLS.CertFile,
+			KeyFile:      cfg.TLS.KeyFile,
+			ClientCAFile: cfg.TLS.ClientCAFile,
+			MinVersion:   cfg.TLS.MinVersion,
 		}
 	}
 
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("server shutdown: %w", err)
+	srv, err := httpserver.New(&httpserver.Config{
+		Addr:    cfg.ListenAddr,
+		Handler: appHandler,
+		TLS:     tlsCfg,
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("creating server: %w", err)
 	}
 
-	logger.Info("server stopped")
-	return nil
+	return srv.Run(ctx)
 }
 
 func initSTS(

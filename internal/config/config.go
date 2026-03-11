@@ -12,16 +12,20 @@ import (
 
 // Config is the top-level csar-authn configuration.
 type Config struct {
-	ListenAddr  string         `yaml:"listen_addr"`
-	BaseURL     string         `yaml:"base_url"`
-	FrontendURL string         `yaml:"frontend_url"`
-	Database    DatabaseConfig `yaml:"database"`
-	JWT         JWTConfig      `yaml:"jwt"`
-	OAuth       OAuthConfig    `yaml:"oauth"`
-	Cookie      CookieConfig   `yaml:"cookie"`
-	Redis       *RedisConfig   `yaml:"redis,omitempty"`
-	STS         STSConfig      `yaml:"sts,omitempty"`
-	Authz       AuthzConfig    `yaml:"authz,omitempty"`
+	ListenAddr  string                  `yaml:"listen_addr"`
+	BaseURL     string                  `yaml:"base_url"`
+	FrontendURL string                  `yaml:"frontend_url"`
+	TLS         configutil.TLSSection   `yaml:"tls"`
+	Health      configutil.HealthSection `yaml:"health"`
+	Log         configutil.LogSection   `yaml:"log"`
+	MetricsAddr string                  `yaml:"metrics_addr"`
+	Database    DatabaseConfig          `yaml:"database"`
+	JWT         JWTConfig               `yaml:"jwt"`
+	OAuth       OAuthConfig             `yaml:"oauth"`
+	Cookie      CookieConfig            `yaml:"cookie"`
+	Redis       *RedisConfig            `yaml:"redis,omitempty"`
+	STS         STSConfig               `yaml:"sts,omitempty"`
+	Authz       AuthzConfig             `yaml:"authz,omitempty"`
 }
 
 // AuthzConfig configures the connection to csar-authz for permissions endpoints.
@@ -149,6 +153,8 @@ func LoadFromBytes(data []byte) (*Config, error) {
 		cfg.STS.AssertionMaxAge = NewDuration(5 * time.Minute)
 	}
 
+	cfg.Health = cfg.Health.WithDefaults()
+
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config validation: %w", err)
 	}
@@ -157,6 +163,12 @@ func LoadFromBytes(data []byte) (*Config, error) {
 }
 
 func (c *Config) validate() error {
+	if err := c.TLS.Validate(); err != nil {
+		return err
+	}
+	if err := c.Log.Validate(); err != nil {
+		return err
+	}
 	if c.Database.DSN == "" {
 		return fmt.Errorf("database.dsn is required")
 	}
@@ -215,6 +227,10 @@ func expandEnvInConfig(cfg *Config) {
 	cfg.ListenAddr = expandEnv(cfg.ListenAddr)
 	cfg.BaseURL = expandEnv(cfg.BaseURL)
 	cfg.FrontendURL = expandEnv(cfg.FrontendURL)
+	cfg.MetricsAddr = expandEnv(cfg.MetricsAddr)
+	cfg.TLS.CertFile = expandEnv(cfg.TLS.CertFile)
+	cfg.TLS.KeyFile = expandEnv(cfg.TLS.KeyFile)
+	cfg.TLS.ClientCAFile = expandEnv(cfg.TLS.ClientCAFile)
 	cfg.Database.DSN = expandEnv(cfg.Database.DSN)
 	cfg.JWT.PrivateKeyFile = expandEnv(cfg.JWT.PrivateKeyFile)
 	cfg.JWT.PublicKeyFile = expandEnv(cfg.JWT.PublicKeyFile)
