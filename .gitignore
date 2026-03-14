@@ -1,3 +1,5 @@
 /.claude
 docs/
 csar-authn
+go.work
+go.work.sum
