@@ -17,6 +17,7 @@ func (s *Store) CreatePasskey(ctx context.Context, passkey *store.Passkey) error
 	if passkey.ID == uuid.Nil {
 		passkey.ID = uuid.New()
 	}
+	normalizePasskeyForStorage(passkey)
 	now := time.Now().UTC()
 	passkey.CreatedAt = now
 	passkey.UpdatedAt = now
@@ -46,6 +47,31 @@ func (s *Store) CreatePasskey(ctx context.Context, passkey *store.Passkey) error
 		return fmt.Errorf("create passkey: %w", err)
 	}
 	return nil
+}
+
+func normalizePasskeyForStorage(passkey *store.Passkey) {
+	passkey.CredentialID = nonNilBytes(passkey.CredentialID)
+	passkey.PublicKey = nonNilBytes(passkey.PublicKey)
+	passkey.Transports = nonNilStrings(passkey.Transports)
+	passkey.AAGUID = nonNilBytes(passkey.AAGUID)
+	passkey.AttestationClientDataJSON = nonNilBytes(passkey.AttestationClientDataJSON)
+	passkey.AttestationClientDataHash = nonNilBytes(passkey.AttestationClientDataHash)
+	passkey.AttestationAuthenticatorData = nonNilBytes(passkey.AttestationAuthenticatorData)
+	passkey.AttestationObject = nonNilBytes(passkey.AttestationObject)
+}
+
+func nonNilBytes(value []byte) []byte {
+	if value == nil {
+		return []byte{}
+	}
+	return value
+}
+
+func nonNilStrings(value []string) []string {
+	if value == nil {
+		return []string{}
+	}
+	return value
 }
 
 func (s *Store) ListPasskeysByUserID(ctx context.Context, userID uuid.UUID) ([]store.Passkey, error) {
