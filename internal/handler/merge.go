@@ -57,6 +57,17 @@ func (h *Handler) handleMergeInitiate(w http.ResponseWriter, r *http.Request) {
 		Secure:   secure,
 		SameSite: sameSite,
 	})
+	if redirectURL := r.URL.Query().Get("redirect_url"); redirectURL != "" && h.oauthMgr.ValidateRedirectURL(redirectURL) {
+		http.SetCookie(w, &http.Cookie{
+			Name:     "csar_redirect",
+			Value:    redirectURL,
+			Path:     "/",
+			MaxAge:   300,
+			HttpOnly: true,
+			Secure:   secure,
+			SameSite: sameSite,
+		})
+	}
 
 	h.logger.Info("initiating merge OAuth flow",
 		"target_user", user.ID, "provider", provider,
