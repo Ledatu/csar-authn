@@ -76,6 +76,17 @@ cookie:
   secure: false
   same_site: "lax"
 
+session:
+  max_age: "30d"
+  idle_timeout: "7d"
+  touch_threshold: "1m"
+  cleanup_interval: "1h"
+
+qr_login:
+  ttl: "2m"
+  max_pending_per_ip: 3
+  cleanup_interval: "5m"
+
 # --- Redis (optional) ---
 # When configured, used for STS replay protection (preferred over Postgres).
 # Falls back to Postgres or in-memory if not set.

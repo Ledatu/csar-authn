@@ -290,6 +290,24 @@ func run(
 		}()
 	}
 
+	go func() {
+		ticker := time.NewTicker(cfg.QRLogin.CleanupInterval.Std())
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				n, err := st.DeleteInactiveLoginHandoffs(ctx)
+				if err != nil {
+					logger.Error("QR login handoff cleanup failed", "error", err)
+				} else if n > 0 {
+					logger.Info("QR login handoff cleanup", "deleted", n)
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
 	// --- Merge authz reconciler ---
 	go h.RunMergeAuthzReconciler(ctx, 60*time.Second)
 

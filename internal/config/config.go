@@ -26,6 +26,7 @@ type (
 	ProviderConfig = authnconfig.ProviderConfig
 	CookieConfig   = authnconfig.CookieConfig
 	SessionConfig  = authnconfig.SessionConfig
+	QRLoginConfig  = authnconfig.QRLoginConfig
 	RedisConfig    = authnconfig.RedisConfig
 	Duration       = authnconfig.Duration
 )

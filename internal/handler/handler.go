@@ -89,6 +89,14 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Logout: POST /auth/logout
 	mux.HandleFunc("POST /auth/logout", h.handleLogout)
 
+	// QR device handoff login.
+	mux.HandleFunc("POST /auth/qr-login/start", h.handleQRLoginStart)
+	mux.HandleFunc("GET /auth/qr-login/status/{id}", h.handleQRLoginStatus)
+	mux.HandleFunc("POST /auth/qr-login/complete/{id}", h.handleQRLoginComplete)
+	mux.HandleFunc("GET /auth/qr-login/by-token/{token}", h.handleQRLoginByToken)
+	mux.HandleFunc("POST /auth/qr-login/approve", h.handleQRLoginApprove)
+	mux.HandleFunc("POST /auth/qr-login/deny", h.handleQRLoginDeny)
+
 	// Current user info: GET /auth/me
 	mux.HandleFunc("GET /auth/me", h.handleMe)
 

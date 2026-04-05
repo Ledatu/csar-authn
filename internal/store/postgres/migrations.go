@@ -201,6 +201,33 @@ CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires
     ON passkey_challenges (expires_at) WHERE consumed_at IS NULL;
 `,
 	},
+	{
+		Name: "012_login_handoffs",
+		Up: `
+CREATE TABLE IF NOT EXISTS login_handoffs (
+    id                  UUID PRIMARY KEY,
+    scan_token_hash     VARCHAR(64) NOT NULL UNIQUE,
+    desktop_secret_hash VARCHAR(64) NOT NULL,
+    redirect_url        TEXT NOT NULL,
+    status              VARCHAR(20) NOT NULL DEFAULT 'pending'
+                        CHECK (status IN ('pending', 'approved', 'denied', 'expired', 'consumed')),
+    approved_by_user_id UUID REFERENCES users(id),
+    desktop_user_agent  TEXT NOT NULL DEFAULT '',
+    desktop_ip_address  TEXT NOT NULL DEFAULT '',
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at          TIMESTAMPTZ NOT NULL,
+    approved_at         TIMESTAMPTZ,
+    denied_at           TIMESTAMPTZ,
+    consumed_at         TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_login_handoffs_pending_scan
+    ON login_handoffs (scan_token_hash) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_login_handoffs_pending_ip
+    ON login_handoffs (desktop_ip_address) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_login_handoffs_expires
+    ON login_handoffs (expires_at) WHERE status IN ('pending', 'approved');
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

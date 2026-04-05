@@ -27,6 +27,7 @@ type Store struct {
 	sessions          map[string]*store.Session        // key: session ID
 	mergeRecords      map[string]*store.MergeRecord    // key: token_hash
 	botVerifications  map[uuid.UUID]*store.BotVerification
+	loginHandoffs     map[uuid.UUID]*store.LoginHandoff
 }
 
 // New returns a new mock Store.
@@ -37,6 +38,7 @@ func New() *Store {
 		passkeys:          make(map[uuid.UUID]*store.Passkey),
 		passkeyChallenges: make(map[uuid.UUID]*store.PasskeyChallenge),
 		serviceAccounts:   make(map[string]*store.ServiceAccount),
+		loginHandoffs:     make(map[uuid.UUID]*store.LoginHandoff),
 	}
 }
 
@@ -967,6 +969,120 @@ func (s *Store) CountPendingBotVerifications(_ context.Context, ipAddress string
 	n := 0
 	for _, v := range s.botVerifications {
 		if v.IPAddress == ipAddress && v.Status == "pending" && now.Before(v.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) CreateLoginHandoff(_ context.Context, handoff *store.LoginHandoff) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *handoff
+	s.loginHandoffs[handoff.ID] = &cp
+	return nil
+}
+
+func (s *Store) GetLoginHandoffByScanToken(_ context.Context, scanTokenHash string) (*store.LoginHandoff, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, handoff := range s.loginHandoffs {
+		if handoff.ScanTokenHash == scanTokenHash {
+			cp := *handoff
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *Store) GetLoginHandoffStatusForDesktop(_ context.Context, id uuid.UUID) (*store.LoginHandoff, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.loginHandoffs[id]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := *handoff
+	return &cp, nil
+}
+
+func (s *Store) ApproveLoginHandoff(_ context.Context, id uuid.UUID, approvedByUserID uuid.UUID) (*store.LoginHandoff, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.loginHandoffs[id]
+	if !ok || handoff.Status != "pending" || !time.Now().Before(handoff.ExpiresAt) {
+		return nil, store.ErrLoginHandoffUnavailable
+	}
+	now := time.Now()
+	handoff.Status = "approved"
+	handoff.ApprovedByUserID = &approvedByUserID
+	handoff.ApprovedAt = &now
+	cp := *handoff
+	return &cp, nil
+}
+
+func (s *Store) DenyLoginHandoff(_ context.Context, id uuid.UUID) (*store.LoginHandoff, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.loginHandoffs[id]
+	if !ok || handoff.Status != "pending" || !time.Now().Before(handoff.ExpiresAt) {
+		return nil, store.ErrLoginHandoffUnavailable
+	}
+	now := time.Now()
+	handoff.Status = "denied"
+	handoff.DeniedAt = &now
+	cp := *handoff
+	return &cp, nil
+}
+
+func (s *Store) ConsumeApprovedLoginHandoff(_ context.Context, id uuid.UUID) (*store.LoginHandoff, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.loginHandoffs[id]
+	if !ok || handoff.Status != "approved" || !time.Now().Before(handoff.ExpiresAt) {
+		return nil, store.ErrLoginHandoffUnavailable
+	}
+	now := time.Now()
+	handoff.Status = "consumed"
+	handoff.ConsumedAt = &now
+	cp := *handoff
+	return &cp, nil
+}
+
+func (s *Store) ExpireLoginHandoff(_ context.Context, id uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	handoff, ok := s.loginHandoffs[id]
+	if !ok {
+		return store.ErrNotFound
+	}
+	if handoff.Status == "pending" {
+		handoff.Status = "expired"
+	}
+	return nil
+}
+
+func (s *Store) CountPendingLoginHandoffs(_ context.Context, ipAddress string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, handoff := range s.loginHandoffs {
+		if handoff.DesktopIPAddress == ipAddress && handoff.Status == "pending" && now.Before(handoff.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) DeleteInactiveLoginHandoffs(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var n int64
+	for id, handoff := range s.loginHandoffs {
+		if handoff.Status == "denied" || handoff.Status == "consumed" || handoff.Status == "expired" || !now.Before(handoff.ExpiresAt) {
+			delete(s.loginHandoffs, id)
 			n++
 		}
 	}

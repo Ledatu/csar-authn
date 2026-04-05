@@ -22,6 +22,7 @@ var (
 	ErrMergeTokenExpired       = errors.New("merge token expired or already consumed")
 	ErrUserAlreadyMerged       = errors.New("source user has already been merged")
 	ErrSelfMerge               = errors.New("cannot merge a user into itself")
+	ErrLoginHandoffUnavailable = errors.New("login handoff is unavailable")
 )
 
 // FindOrCreateResult indicates the outcome of FindOrCreateUser.
@@ -128,6 +129,23 @@ type BotVerification struct {
 	ConsumedAt      *time.Time
 	UserAgent       string
 	IPAddress       string
+}
+
+// LoginHandoff tracks a short-lived QR device handoff request.
+type LoginHandoff struct {
+	ID                uuid.UUID
+	ScanTokenHash     string
+	DesktopSecretHash string
+	RedirectURL       string
+	Status            string // pending, approved, denied, expired, consumed
+	ApprovedByUserID  *uuid.UUID
+	DesktopUserAgent  string
+	DesktopIPAddress  string
+	CreatedAt         time.Time
+	ExpiresAt         time.Time
+	ApprovedAt        *time.Time
+	DeniedAt          *time.Time
+	ConsumedAt        *time.Time
 }
 
 // Session represents a server-side session backed by the sessions table.
@@ -362,6 +380,40 @@ type Store interface {
 
 	// CountPendingBotVerifications counts active pending verifications by IP address.
 	CountPendingBotVerifications(ctx context.Context, ipAddress string) (int, error)
+
+	// --- QR Login Handoff ---
+
+	// CreateLoginHandoff stores a new QR login handoff with hashed secrets.
+	CreateLoginHandoff(ctx context.Context, handoff *LoginHandoff) error
+
+	// GetLoginHandoffByScanToken returns a handoff by its hashed scan token.
+	// Returns ErrNotFound if the handoff does not exist.
+	GetLoginHandoffByScanToken(ctx context.Context, scanTokenHash string) (*LoginHandoff, error)
+
+	// GetLoginHandoffStatusForDesktop returns a handoff by request ID for desktop polling.
+	// Returns ErrNotFound if the handoff does not exist.
+	GetLoginHandoffStatusForDesktop(ctx context.Context, id uuid.UUID) (*LoginHandoff, error)
+
+	// ApproveLoginHandoff atomically transitions a pending, unexpired handoff to approved.
+	// Returns ErrLoginHandoffUnavailable if the handoff is not currently approvable.
+	ApproveLoginHandoff(ctx context.Context, id uuid.UUID, approvedByUserID uuid.UUID) (*LoginHandoff, error)
+
+	// DenyLoginHandoff atomically transitions a pending, unexpired handoff to denied.
+	// Returns ErrLoginHandoffUnavailable if the handoff is not currently deniable.
+	DenyLoginHandoff(ctx context.Context, id uuid.UUID) (*LoginHandoff, error)
+
+	// ConsumeApprovedLoginHandoff atomically transitions an approved, unexpired handoff to consumed.
+	// Returns ErrLoginHandoffUnavailable if the handoff is not currently consumable.
+	ConsumeApprovedLoginHandoff(ctx context.Context, id uuid.UUID) (*LoginHandoff, error)
+
+	// ExpireLoginHandoff marks a pending handoff as expired.
+	ExpireLoginHandoff(ctx context.Context, id uuid.UUID) error
+
+	// CountPendingLoginHandoffs counts still-pending handoffs for a desktop IP.
+	CountPendingLoginHandoffs(ctx context.Context, ipAddress string) (int, error)
+
+	// DeleteInactiveLoginHandoffs removes expired or terminal handoffs.
+	DeleteInactiveLoginHandoffs(ctx context.Context) (int64, error)
 
 	// MigrateTelegramID atomically migrates a Telegram oauth_account's
 	// provider_user_id from oldID to newID, storing metadata on the surviving row.
