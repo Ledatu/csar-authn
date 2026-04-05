@@ -3,6 +3,7 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/botverify"
 	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-authn/internal/oauth"
+	"github.com/ledatu/csar-authn/internal/passkey"
 	"github.com/ledatu/csar-authn/internal/session"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-authn/internal/sts"
@@ -27,6 +29,7 @@ type Handler struct {
 	sessionMgr    *session.Manager
 	sessMgr       *session.SessionManager
 	oauthMgr      *oauth.Manager
+	passkeySvc    *passkey.Service
 	stsHandler    *sts.Handler   // nil when STS is not configured
 	authzClient   *AuthzClient   // nil when authz is not configured
 	auditRecorder audit.Recorder // nil when audit is not configured
@@ -36,12 +39,13 @@ type Handler struct {
 
 // New creates a Handler with all dependencies.
 // stsHandler, authzClient, and auditRecorder may be nil when their features are not enabled.
-func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, stsHandler *sts.Handler, authzClient *AuthzClient, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
+func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, stsHandler *sts.Handler, authzClient *AuthzClient, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
 	h := &Handler{
 		store:         st,
 		sessionMgr:    sessionMgr,
 		sessMgr:       sessMgr,
 		oauthMgr:      oauthMgr,
+		passkeySvc:    passkeySvc,
 		stsHandler:    stsHandler,
 		authzClient:   authzClient,
 		auditRecorder: auditRecorder,
@@ -92,6 +96,15 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)
 	mux.HandleFunc("POST /auth/me/sessions/revoke-others", h.handleRevokeOtherMeSessions)
 	mux.HandleFunc("POST /auth/me/sessions/{session_id}/revoke", h.handleRevokeMeSession)
+
+	if h.passkeySvc != nil {
+		mux.HandleFunc("GET /auth/me/passkeys", h.handleMePasskeys)
+		mux.HandleFunc("POST /auth/me/passkeys/options", h.handleBeginPasskeyRegistration)
+		mux.HandleFunc("POST /auth/me/passkeys", h.handleFinishPasskeyRegistration)
+		mux.HandleFunc("DELETE /auth/me/passkeys/{passkey_id}", h.handleDeletePasskey)
+		mux.HandleFunc("POST /auth/passkeys/options", h.handleBeginPasskeyLogin)
+		mux.HandleFunc("POST /auth/passkeys/verify", h.handleFinishPasskeyLogin)
+	}
 
 	// Session validation for router subrequests: GET /auth/validate
 	mux.HandleFunc("GET /auth/validate", h.handleValidate)
@@ -175,12 +188,13 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type meResponse struct {
-		ID          string          `json:"id"`
-		Email       string          `json:"email,omitempty"`
-		Phone       string          `json:"phone,omitempty"`
-		DisplayName string          `json:"display_name"`
-		AvatarURL   string          `json:"avatar_url,omitempty"`
-		Accounts    []linkedAccount `json:"linked_accounts,omitempty"`
+		ID            string          `json:"id"`
+		Email         string          `json:"email,omitempty"`
+		Phone         string          `json:"phone,omitempty"`
+		DisplayName   string          `json:"display_name"`
+		AvatarURL     string          `json:"avatar_url,omitempty"`
+		PasskeysCount int             `json:"passkeys_count"`
+		Accounts      []linkedAccount `json:"linked_accounts,omitempty"`
 	}
 
 	resp := meResponse{
@@ -189,6 +203,11 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		Phone:       user.Phone,
 		DisplayName: user.DisplayName,
 		AvatarURL:   user.AvatarURL,
+	}
+	if passkeys, err := h.store.ListPasskeysByUserID(r.Context(), user.ID); err != nil {
+		h.logger.Error("failed to fetch passkeys", "user_id", user.ID, "error", err)
+	} else {
+		resp.PasskeysCount = len(passkeys)
 	}
 	for _, a := range accounts {
 		resp.Accounts = append(resp.Accounts, linkedAccount{
@@ -217,18 +236,15 @@ func (h *Handler) handleUnlinkProvider(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	count, err := h.store.CountOAuthAccounts(r.Context(), user.ID)
-	if err != nil {
-		h.logger.Error("failed to count oauth accounts", "user_id", user.ID, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	if count <= 1 {
-		http.Error(w, "cannot unlink the last provider", http.StatusBadRequest)
-		return
-	}
-
 	if err := h.store.DeleteOAuthAccount(r.Context(), provider, user.ID); err != nil {
+		if errors.Is(err, store.ErrLastLoginMethod) {
+			http.Error(w, "cannot remove the last login method", http.StatusBadRequest)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			http.Error(w, "provider not found", http.StatusNotFound)
+			return
+		}
 		h.logger.Error("failed to unlink provider", "user_id", user.ID, "provider", provider, "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

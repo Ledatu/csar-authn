@@ -31,6 +31,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-authn/internal/handler"
 	"github.com/ledatu/csar-authn/internal/oauth"
+	"github.com/ledatu/csar-authn/internal/passkey"
 	"github.com/ledatu/csar-authn/internal/session"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-authn/internal/store/postgres"
@@ -157,6 +158,14 @@ func run(
 		return fmt.Errorf("initializing oauth: %w", err)
 	}
 
+	var passkeySvc *passkey.Service
+	if cfg.Passkeys.Enabled {
+		passkeySvc, err = passkey.New(cfg.Passkeys)
+		if err != nil {
+			return fmt.Errorf("initializing passkeys: %w", err)
+		}
+	}
+
 	var stsHandler *sts.Handler
 	if cfg.STS.Enabled {
 		stsHandler, err = initSTS(ctx, cfg, st, sessionMgr, logger)
@@ -201,7 +210,7 @@ func run(
 
 	// --- Routes ---
 	mux := http.NewServeMux()
-	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, stsHandler, authzClient, auditRecorder, logger, cfg)
+	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, passkeySvc, stsHandler, authzClient, auditRecorder, logger, cfg)
 	h.RegisterRoutes(mux)
 
 	// Health and readiness endpoints.
@@ -253,6 +262,26 @@ func run(
 						logger.Error("bot verification cleanup failed", "error", err)
 					} else if n > 0 {
 						logger.Info("bot verification cleanup", "expired", n)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	if cfg.Passkeys.Enabled {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					n, err := st.CleanExpiredPasskeyChallenges(ctx)
+					if err != nil {
+						logger.Error("passkey challenge cleanup failed", "error", err)
+					} else if n > 0 {
+						logger.Info("passkey challenge cleanup", "deleted", n)
 					}
 				case <-ctx.Done():
 					return

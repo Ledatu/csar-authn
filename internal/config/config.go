@@ -22,6 +22,7 @@ type (
 	DatabaseConfig = authnconfig.DatabaseConfig
 	JWTConfig      = authnconfig.JWTConfig
 	OAuthConfig    = authnconfig.OAuthConfig
+	PasskeyConfig  = authnconfig.PasskeyConfig
 	ProviderConfig = authnconfig.ProviderConfig
 	CookieConfig   = authnconfig.CookieConfig
 	SessionConfig  = authnconfig.SessionConfig

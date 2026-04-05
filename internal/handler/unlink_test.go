@@ -98,3 +98,54 @@ func TestUnlinkProvider_AuditRecorded(t *testing.T) {
 		t.Errorf("target_id = %q, want %q", events[0].TargetID, "yandex")
 	}
 }
+
+func TestUnlinkProvider_RejectsLastLoginMethod(t *testing.T) {
+	kp, err := jwtx.GenerateKeyPair("EdDSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	jwtCfg := config.JWTConfig{
+		Issuer:   "test-issuer",
+		Audience: "test-audience",
+		TTL:      authnconfig.NewDuration(time.Hour),
+	}
+	sm := session.NewManager(kp, jwtCfg)
+	st := mock.New()
+
+	h := &Handler{
+		store:      st,
+		sessionMgr: sm,
+		logger:     slog.Default(),
+	}
+	h.cfg.Store(&config.Config{
+		Cookie: config.CookieConfig{Name: "session"},
+	})
+
+	userID := uuid.MustParse("11111111-1111-4111-8111-111111111111")
+	st.SeedUser(&store.User{
+		ID:          userID,
+		Email:       "single-unlink@test.com",
+		DisplayName: "Single Unlink",
+	})
+	if err := st.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider: "telegram", ProviderUserID: "tg-only", UserID: userID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	token, err := sm.IssueToken(userID.String(), "single-unlink@test.com", "Single Unlink")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/auth/providers/telegram", nil)
+	req.SetPathValue("provider", "telegram")
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	h.handleUnlinkProvider(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}

@@ -219,6 +219,56 @@ func TestLinkOAuthAccount(t *testing.T) {
 	}
 }
 
+func TestCountUserLoginMethods(t *testing.T) {
+	s := mock.New()
+	user := &store.User{ID: uuid.New(), Email: "passkey@example.com"}
+	s.SeedUser(user)
+
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       "telegram",
+		ProviderUserID: "tg-1",
+		UserID:         user.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.CreatePasskey(context.Background(), &store.Passkey{
+		UserID:       user.ID,
+		Label:        "My Passkey",
+		CredentialID: []byte("cred-1"),
+		PublicKey:    []byte("pk-1"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	count, err := s.CountUserLoginMethods(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 2 {
+		t.Fatalf("CountUserLoginMethods() = %d, want 2", count)
+	}
+}
+
+func TestDeleteOAuthAccount_RejectsLastLoginMethod(t *testing.T) {
+	s := mock.New()
+	user := &store.User{ID: uuid.New(), Email: "single@example.com"}
+	s.SeedUser(user)
+
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       "telegram",
+		ProviderUserID: "tg-single",
+		UserID:         user.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.DeleteOAuthAccount(context.Background(), "telegram", user.ID)
+	if !errors.Is(err, store.ErrLastLoginMethod) {
+		t.Fatalf("expected ErrLastLoginMethod, got %v", err)
+	}
+}
+
 func TestMigrateTelegramID_Success(t *testing.T) {
 	s := mock.New()
 	user := &store.User{ID: uuid.New(), Phone: "+1111111111"}
@@ -258,6 +308,35 @@ func TestMigrateTelegramID_Success(t *testing.T) {
 	}
 	if got.ProviderMetadata["oidc_sub"] != "old-oidc-sub" {
 		t.Fatalf("expected metadata oidc_sub, got %v", got.ProviderMetadata)
+	}
+}
+
+func TestMergeUsers_MovesPasskeys(t *testing.T) {
+	s := mock.New()
+	target := &store.User{ID: uuid.New(), Email: "target@example.com"}
+	source := &store.User{ID: uuid.New(), Email: "source@example.com"}
+	s.SeedUser(target)
+	s.SeedUser(source)
+
+	if err := s.CreatePasskey(context.Background(), &store.Passkey{
+		UserID:       source.ID,
+		Label:        "Source Passkey",
+		CredentialID: []byte("cred-merge"),
+		PublicKey:    []byte("pk-merge"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.MergeUsers(context.Background(), target.ID, source.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	passkey, err := s.GetPasskeyByCredentialID(context.Background(), []byte("cred-merge"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if passkey.UserID != target.ID {
+		t.Fatalf("passkey.UserID = %s, want %s", passkey.UserID, target.ID)
 	}
 }
 

@@ -159,6 +159,48 @@ CREATE INDEX IF NOT EXISTS idx_bot_verifications_expires
     ON bot_verifications (expires_at) WHERE status IN ('pending', 'confirmed');
 `,
 	},
+	{
+		Name: "011_passkeys",
+		Up: `
+CREATE TABLE IF NOT EXISTS passkeys (
+    id                               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id                          UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    label                            TEXT NOT NULL,
+    credential_id                    BYTEA NOT NULL UNIQUE,
+    public_key                       BYTEA NOT NULL,
+    attestation_type                 TEXT NOT NULL DEFAULT '',
+    transports                       TEXT[] NOT NULL DEFAULT '{}',
+    user_present                     BOOLEAN NOT NULL DEFAULT false,
+    user_verified                    BOOLEAN NOT NULL DEFAULT false,
+    backup_eligible                  BOOLEAN NOT NULL DEFAULT false,
+    backup_state                     BOOLEAN NOT NULL DEFAULT false,
+    aaguid                           BYTEA NOT NULL DEFAULT '',
+    sign_count                       BIGINT NOT NULL DEFAULT 0,
+    attachment                       TEXT NOT NULL DEFAULT '',
+    attestation_client_data_json     BYTEA NOT NULL DEFAULT '',
+    attestation_client_data_hash     BYTEA NOT NULL DEFAULT '',
+    attestation_authenticator_data   BYTEA NOT NULL DEFAULT '',
+    attestation_object               BYTEA NOT NULL DEFAULT '',
+    attestation_public_key_algorithm BIGINT NOT NULL DEFAULT 0,
+    created_at                       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_used_at                     TIMESTAMPTZ,
+    updated_at                       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_passkeys_user_id ON passkeys (user_id);
+
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+    id           UUID PRIMARY KEY,
+    user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
+    kind         TEXT NOT NULL CHECK (kind IN ('registration', 'login')),
+    session_data JSONB NOT NULL,
+    created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at   TIMESTAMPTZ NOT NULL,
+    consumed_at  TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_passkey_challenges_expires
+    ON passkey_challenges (expires_at) WHERE consumed_at IS NULL;
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

@@ -18,21 +18,25 @@ import (
 
 // Store is a thread-safe in-memory implementation of store.Store.
 type Store struct {
-	mu               sync.Mutex
-	users            map[uuid.UUID]*store.User
-	accounts         map[string]*store.OAuthAccount   // key: provider|provider_user_id
-	serviceAccounts  map[string]*store.ServiceAccount // key: name
-	sessions         map[string]*store.Session        // key: session ID
-	mergeRecords     map[string]*store.MergeRecord    // key: token_hash
-	botVerifications map[uuid.UUID]*store.BotVerification
+	mu                sync.Mutex
+	users             map[uuid.UUID]*store.User
+	accounts          map[string]*store.OAuthAccount // key: provider|provider_user_id
+	passkeys          map[uuid.UUID]*store.Passkey
+	passkeyChallenges map[uuid.UUID]*store.PasskeyChallenge
+	serviceAccounts   map[string]*store.ServiceAccount // key: name
+	sessions          map[string]*store.Session        // key: session ID
+	mergeRecords      map[string]*store.MergeRecord    // key: token_hash
+	botVerifications  map[uuid.UUID]*store.BotVerification
 }
 
 // New returns a new mock Store.
 func New() *Store {
 	return &Store{
-		users:           make(map[uuid.UUID]*store.User),
-		accounts:        make(map[string]*store.OAuthAccount),
-		serviceAccounts: make(map[string]*store.ServiceAccount),
+		users:             make(map[uuid.UUID]*store.User),
+		accounts:          make(map[string]*store.OAuthAccount),
+		passkeys:          make(map[uuid.UUID]*store.Passkey),
+		passkeyChallenges: make(map[uuid.UUID]*store.PasskeyChallenge),
+		serviceAccounts:   make(map[string]*store.ServiceAccount),
 	}
 }
 
@@ -165,13 +169,27 @@ func (s *Store) UpdateOAuthAccount(_ context.Context, acct *store.OAuthAccount) 
 func (s *Store) DeleteOAuthAccount(_ context.Context, provider string, userID uuid.UUID) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	loginMethods := 0
+	for _, account := range s.accounts {
+		if account.UserID == userID {
+			loginMethods++
+		}
+	}
+	for _, passkey := range s.passkeys {
+		if passkey.UserID == userID {
+			loginMethods++
+		}
+	}
+	if loginMethods <= 1 {
+		return store.ErrLastLoginMethod
+	}
 	for key, a := range s.accounts {
 		if a.Provider == provider && a.UserID == userID {
 			delete(s.accounts, key)
 			return nil
 		}
 	}
-	return nil
+	return store.ErrNotFound
 }
 
 // FindOrCreateUser mirrors the production matching priority:
@@ -273,6 +291,151 @@ func (s *Store) CountOAuthAccounts(_ context.Context, userID uuid.UUID) (int, er
 		}
 	}
 	return n, nil
+}
+
+func (s *Store) CreatePasskey(_ context.Context, passkey *store.Passkey) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if passkey.ID == uuid.Nil {
+		passkey.ID = uuid.New()
+	}
+	for _, existing := range s.passkeys {
+		if string(existing.CredentialID) == string(passkey.CredentialID) {
+			return store.ErrPasskeyAlreadyLinked
+		}
+	}
+	now := time.Now()
+	passkey.CreatedAt = now
+	passkey.UpdatedAt = now
+	cp := *passkey
+	s.passkeys[passkey.ID] = &cp
+	return nil
+}
+
+func (s *Store) ListPasskeysByUserID(_ context.Context, userID uuid.UUID) ([]store.Passkey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]store.Passkey, 0)
+	for _, passkey := range s.passkeys {
+		if passkey.UserID == userID {
+			cp := *passkey
+			out = append(out, cp)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].CreatedAt.Before(out[j].CreatedAt)
+	})
+	return out, nil
+}
+
+func (s *Store) GetPasskeyByCredentialID(_ context.Context, credentialID []byte) (*store.Passkey, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, passkey := range s.passkeys {
+		if string(passkey.CredentialID) == string(credentialID) {
+			cp := *passkey
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (s *Store) DeletePasskey(_ context.Context, passkeyID, userID uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	loginMethods := 0
+	for _, account := range s.accounts {
+		if account.UserID == userID {
+			loginMethods++
+		}
+	}
+	for _, passkey := range s.passkeys {
+		if passkey.UserID == userID {
+			loginMethods++
+		}
+	}
+	if loginMethods <= 1 {
+		return store.ErrLastLoginMethod
+	}
+	passkey, ok := s.passkeys[passkeyID]
+	if !ok || passkey.UserID != userID {
+		return store.ErrNotFound
+	}
+	delete(s.passkeys, passkeyID)
+	return nil
+}
+
+func (s *Store) UpdatePasskeyUsage(_ context.Context, passkeyID uuid.UUID, signCount uint32, backupState bool, userVerified bool, lastUsedAt time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	passkey, ok := s.passkeys[passkeyID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	passkey.SignCount = signCount
+	passkey.BackupState = backupState
+	passkey.UserVerified = userVerified
+	passkey.LastUsedAt = &lastUsedAt
+	passkey.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *Store) CountUserLoginMethods(_ context.Context, userID uuid.UUID) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	count := 0
+	for _, account := range s.accounts {
+		if account.UserID == userID {
+			count++
+		}
+	}
+	for _, passkey := range s.passkeys {
+		if passkey.UserID == userID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (s *Store) CreatePasskeyChallenge(_ context.Context, challenge *store.PasskeyChallenge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if challenge.ID == uuid.Nil {
+		challenge.ID = uuid.New()
+	}
+	if challenge.CreatedAt.IsZero() {
+		challenge.CreatedAt = time.Now()
+	}
+	cp := *challenge
+	s.passkeyChallenges[challenge.ID] = &cp
+	return nil
+}
+
+func (s *Store) ConsumePasskeyChallenge(_ context.Context, id uuid.UUID, kind string) (*store.PasskeyChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	challenge, ok := s.passkeyChallenges[id]
+	if !ok || challenge.Kind != kind || challenge.ConsumedAt != nil || time.Now().After(challenge.ExpiresAt) {
+		return nil, store.ErrNotFound
+	}
+	now := time.Now()
+	challenge.ConsumedAt = &now
+	cp := *challenge
+	return &cp, nil
+}
+
+func (s *Store) CleanExpiredPasskeyChallenges(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var removed int64
+	now := time.Now()
+	for id, challenge := range s.passkeyChallenges {
+		if challenge.ConsumedAt != nil || now.After(challenge.ExpiresAt) {
+			delete(s.passkeyChallenges, id)
+			removed++
+		}
+	}
+	return removed, nil
 }
 
 func (s *Store) ListActiveServiceAccounts(_ context.Context) ([]store.ServiceAccount, error) {
@@ -654,6 +817,13 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 		if a.UserID == sourceID {
 			a.UserID = targetID
 			s.accounts[key] = a
+		}
+	}
+	for key, passkey := range s.passkeys {
+		if passkey.UserID == sourceID {
+			passkey.UserID = targetID
+			passkey.UpdatedAt = time.Now()
+			s.passkeys[key] = passkey
 		}
 	}
 

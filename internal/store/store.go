@@ -17,6 +17,8 @@ var (
 	ErrNotFound                = errors.New("not found")
 	ErrUnverifiedEmailConflict = errors.New("email matches existing user but provider email is not verified")
 	ErrProviderAlreadyLinked   = errors.New("provider account is already linked to another user")
+	ErrPasskeyAlreadyLinked    = errors.New("passkey is already linked to a user")
+	ErrLastLoginMethod         = errors.New("cannot remove the last login method")
 	ErrMergeTokenExpired       = errors.New("merge token expired or already consumed")
 	ErrUserAlreadyMerged       = errors.New("source user has already been merged")
 	ErrSelfMerge               = errors.New("cannot merge a user into itself")
@@ -71,6 +73,43 @@ type OAuthAccount struct {
 	LinkedAt         time.Time
 	UpdatedAt        time.Time
 	ProviderMetadata map[string]interface{} // provider-specific data (e.g. Telegram OIDC sub)
+}
+
+// Passkey stores a WebAuthn credential linked to an internal user.
+type Passkey struct {
+	ID                            uuid.UUID
+	UserID                        uuid.UUID
+	Label                         string
+	CredentialID                  []byte
+	PublicKey                     []byte
+	AttestationType               string
+	Transports                    []string
+	UserPresent                   bool
+	UserVerified                  bool
+	BackupEligible                bool
+	BackupState                   bool
+	AAGUID                        []byte
+	SignCount                     uint32
+	Attachment                    string
+	AttestationClientDataJSON     []byte
+	AttestationClientDataHash     []byte
+	AttestationAuthenticatorData  []byte
+	AttestationObject             []byte
+	AttestationPublicKeyAlgorithm int64
+	CreatedAt                     time.Time
+	LastUsedAt                    *time.Time
+	UpdatedAt                     time.Time
+}
+
+// PasskeyChallenge stores single-use WebAuthn ceremony state.
+type PasskeyChallenge struct {
+	ID          uuid.UUID
+	UserID      *uuid.UUID
+	Kind        string
+	SessionData []byte
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	ConsumedAt  *time.Time
 }
 
 // BotVerification tracks a pending bot-based identity verification.
@@ -197,6 +236,33 @@ type Store interface {
 
 	// CountOAuthAccounts returns the number of linked OAuth accounts for a user.
 	CountOAuthAccounts(ctx context.Context, userID uuid.UUID) (int, error)
+
+	// CreatePasskey stores a new passkey credential for a user.
+	CreatePasskey(ctx context.Context, passkey *Passkey) error
+
+	// ListPasskeysByUserID returns all passkeys linked to a user.
+	ListPasskeysByUserID(ctx context.Context, userID uuid.UUID) ([]Passkey, error)
+
+	// GetPasskeyByCredentialID returns a passkey by credential ID.
+	GetPasskeyByCredentialID(ctx context.Context, credentialID []byte) (*Passkey, error)
+
+	// DeletePasskey removes a passkey owned by a user.
+	DeletePasskey(ctx context.Context, passkeyID, userID uuid.UUID) error
+
+	// UpdatePasskeyUsage updates sign counter, flags, and last-used timestamp after a successful assertion.
+	UpdatePasskeyUsage(ctx context.Context, passkeyID uuid.UUID, signCount uint32, backupState bool, userVerified bool, lastUsedAt time.Time) error
+
+	// CountUserLoginMethods returns the total number of login methods (OAuth + passkeys) linked to a user.
+	CountUserLoginMethods(ctx context.Context, userID uuid.UUID) (int, error)
+
+	// CreatePasskeyChallenge stores single-use WebAuthn ceremony state.
+	CreatePasskeyChallenge(ctx context.Context, challenge *PasskeyChallenge) error
+
+	// ConsumePasskeyChallenge marks a challenge as consumed and returns its stored session data.
+	ConsumePasskeyChallenge(ctx context.Context, id uuid.UUID, kind string) (*PasskeyChallenge, error)
+
+	// CleanExpiredPasskeyChallenges purges expired or consumed WebAuthn ceremony rows.
+	CleanExpiredPasskeyChallenges(ctx context.Context) (int64, error)
 
 	// ListActiveServiceAccounts returns all service accounts with status "active".
 	ListActiveServiceAccounts(ctx context.Context) ([]ServiceAccount, error)

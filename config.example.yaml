@@ -60,6 +60,17 @@ oauth:
       scopes: ["openid", "profile", "phone"]
       trusted: false     # no email; phone is verified but trust flag is for email
 
+passkeys:
+  enabled: true
+  rp_id: "localhost"
+  rp_display_name: "CSAR Auth"
+  origins: ["http://localhost:3000", "http://localhost:8081"]
+  challenge_ttl: "5m"
+  state_cookie_name: "csar_passkey_state"
+  user_verification: "required"
+  attestation: "none"
+  state_secret: "${PASSKEY_STATE_SECRET}"
+
 cookie:
   name: "csar_session"
   secure: false

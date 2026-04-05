@@ -242,12 +242,46 @@ func (s *Store) UpdateOAuthAccount(ctx context.Context, acct *store.OAuthAccount
 }
 
 func (s *Store) DeleteOAuthAccount(ctx context.Context, provider string, userID uuid.UUID) error {
-	_, err := s.pool.Exec(ctx,
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete oauth account tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked int
+	if err := tx.QueryRow(ctx, `SELECT 1 FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&locked); err != nil {
+		if pgutil.IsNotFound(err) {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("lock user for oauth delete: %w", err)
+	}
+
+	var loginMethodCount int
+	if err := tx.QueryRow(ctx,
+		`SELECT
+		   (SELECT COUNT(*) FROM oauth_accounts WHERE user_id = $1) +
+		   (SELECT COUNT(*) FROM passkeys WHERE user_id = $1)`,
+		userID,
+	).Scan(&loginMethodCount); err != nil {
+		return fmt.Errorf("count login methods before oauth delete: %w", err)
+	}
+	if loginMethodCount <= 1 {
+		return store.ErrLastLoginMethod
+	}
+
+	tag, err := tx.Exec(ctx,
 		`DELETE FROM oauth_accounts WHERE provider = $1 AND user_id = $2`,
 		provider, userID,
 	)
 	if err != nil {
 		return fmt.Errorf("delete oauth account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete oauth account: %w", err)
 	}
 	return nil
 }
@@ -751,6 +785,13 @@ func (s *Store) MergeUsers(ctx context.Context, targetID, sourceID uuid.UUID) er
 		targetID, sourceID,
 	); err != nil {
 		return fmt.Errorf("moving oauth accounts: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`UPDATE passkeys SET user_id = $1, updated_at = now() WHERE user_id = $2`,
+		targetID, sourceID,
+	); err != nil {
+		return fmt.Errorf("moving passkeys: %w", err)
 	}
 
 	// Revoke all source sessions.
