@@ -148,6 +148,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /auth/me/permissions", h.handlePermissions)
 		mux.HandleFunc("GET /auth/me/check", h.handleCheck)
 
+		mux.HandleFunc("POST /svc/authn/users/resolve", h.handleResolveServiceUsers)
+
 		// Service account admin endpoints.
 		mux.HandleFunc("GET /admin/users", h.handleListAdminUsers)
 		mux.HandleFunc("GET /admin/service-accounts", h.handleListServiceAccounts)

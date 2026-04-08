@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"strconv"
@@ -18,6 +19,7 @@ const (
 	defaultAdminUserListLimit = 20
 	maxAdminUserListLimit     = 50
 	minAdminUserQueryLength   = 2
+	maxServiceUserResolveIDs  = 100
 )
 
 type adminUserListItem struct {
@@ -30,6 +32,20 @@ type adminUserListItem struct {
 type adminUserListResponse struct {
 	Users []adminUserListItem `json:"users"`
 	Limit int                 `json:"limit"`
+}
+
+type serviceUserResolveRequest struct {
+	IDs []string `json:"ids"`
+}
+
+type serviceUserResolveItem struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	AvatarURL   string `json:"avatar_url,omitempty"`
+}
+
+type serviceUserResolveResponse struct {
+	Users []serviceUserResolveItem `json:"users"`
 }
 
 func (h *Handler) requireAdminUserLookupPermission(r *http.Request, subject string) *apierror.Response {
@@ -115,4 +131,77 @@ func (h *Handler) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
 func looksLikeUUID(v string) bool {
 	_, err := uuid.Parse(v)
 	return err == nil
+}
+
+func (h *Handler) handleResolveServiceUsers(w http.ResponseWriter, r *http.Request) {
+	var req serviceUserResolveRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		apierror.New("bad_request", http.StatusBadRequest, "invalid request body").Write(w)
+		return
+	}
+
+	ids := dedupeValidUserIDs(req.IDs, maxServiceUserResolveIDs)
+	if len(ids) == 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", "no-store")
+		_ = json.NewEncoder(w).Encode(serviceUserResolveResponse{Users: []serviceUserResolveItem{}})
+		return
+	}
+
+	users, err := h.resolveUsersByID(r.Context(), ids)
+	if err != nil {
+		h.logger.Error("failed to resolve service users", "error", err)
+		apierror.New("internal_error", http.StatusInternalServerError, "failed to resolve users").Write(w)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Vary", "Authorization")
+	_ = json.NewEncoder(w).Encode(serviceUserResolveResponse{Users: users})
+}
+
+func (h *Handler) resolveUsersByID(ctx context.Context, ids []uuid.UUID) ([]serviceUserResolveItem, error) {
+	out := make([]serviceUserResolveItem, 0, len(ids))
+	for _, id := range ids {
+		user, err := h.store.GetUserByID(ctx, id)
+		if err != nil {
+			if err == store.ErrNotFound {
+				continue
+			}
+			return nil, err
+		}
+		out = append(out, serviceUserResolveItem{
+			ID:          user.ID.String(),
+			DisplayName: user.DisplayName,
+			AvatarURL:   user.AvatarURL,
+		})
+	}
+	return out, nil
+}
+
+func dedupeValidUserIDs(raw []string, limit int) []uuid.UUID {
+	if len(raw) == 0 || limit <= 0 {
+		return nil
+	}
+
+	seen := make(map[uuid.UUID]struct{}, len(raw))
+	out := make([]uuid.UUID, 0, min(limit, len(raw)))
+	for _, item := range raw {
+		if len(out) >= limit {
+			break
+		}
+
+		id, err := uuid.Parse(strings.TrimSpace(item))
+		if err != nil {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+
+	return out
 }

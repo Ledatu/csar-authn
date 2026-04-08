@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -171,5 +172,53 @@ func TestAdminUsers_LimitClamped(t *testing.T) {
 	}
 	if len(body.Users) != maxAdminUserListLimit {
 		t.Fatalf("expected %d users, got %d", maxAdminUserListLimit, len(body.Users))
+	}
+}
+
+func TestServiceUsersResolve_OK(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
+
+	userID := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	st.SeedUser(&store.User{
+		ID:          userID,
+		DisplayName: "Alice Admin",
+		AvatarURL:   "https://example.com/alice.png",
+	})
+
+	body := `{"ids":["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","not-a-uuid","aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}`
+	req := httptest.NewRequest(http.MethodPost, "/svc/authn/users/resolve", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.handleResolveServiceUsers(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp serviceUserResolveResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if len(resp.Users) != 1 {
+		t.Fatalf("expected 1 user, got %d", len(resp.Users))
+	}
+	if resp.Users[0].ID != userID.String() {
+		t.Fatalf("id = %q, want %q", resp.Users[0].ID, userID.String())
+	}
+	if resp.Users[0].DisplayName != "Alice Admin" {
+		t.Fatalf("display_name = %q", resp.Users[0].DisplayName)
+	}
+}
+
+func TestServiceUsersResolve_InvalidBody(t *testing.T) {
+	h, _, _ := newSessionsHandler(t, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/svc/authn/users/resolve", strings.NewReader(`{`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h.handleResolveServiceUsers(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
 	}
 }
