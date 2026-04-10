@@ -71,9 +71,10 @@ func (s *Store) Pool() *pgxpool.Pool {
 func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at, merged_into, merged_at
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name,
+		        COALESCE(avatar_storage_key, ''), avatar_url, created_at, updated_at, merged_into, merged_at
 		 FROM users WHERE id = $1`, id,
-	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarStorageKey, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
 	if pgutil.IsNotFound(err) {
 		return nil, store.ErrNotFound
 	}
@@ -86,9 +87,10 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, err
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at, merged_into, merged_at
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name,
+		        COALESCE(avatar_storage_key, ''), avatar_url, created_at, updated_at, merged_into, merged_at
 		 FROM users WHERE lower(email) = lower($1) AND merged_into IS NULL`, email,
-	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarStorageKey, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
 	if pgutil.IsNotFound(err) {
 		return nil, store.ErrNotFound
 	}
@@ -101,9 +103,10 @@ func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, 
 func (s *Store) GetUserByPhone(ctx context.Context, phone string) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at, merged_into, merged_at
+		`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name,
+		        COALESCE(avatar_storage_key, ''), avatar_url, created_at, updated_at, merged_into, merged_at
 		 FROM users WHERE phone = $1 AND merged_into IS NULL`, phone,
-	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
+	).Scan(&u.ID, &u.Email, &u.Phone, &u.DisplayName, &u.AvatarStorageKey, &u.AvatarURL, &u.CreatedAt, &u.UpdatedAt, &u.MergedInto, &u.MergedAt)
 	if pgutil.IsNotFound(err) {
 		return nil, store.ErrNotFound
 	}
@@ -122,9 +125,9 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) (*store.User, err
 	u.UpdatedAt = now
 
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO users (id, email, phone, display_name, avatar_url, created_at, updated_at)
-		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7)`,
-		u.ID, u.Email, u.Phone, u.DisplayName, u.AvatarURL, u.CreatedAt, u.UpdatedAt,
+		`INSERT INTO users (id, email, phone, display_name, avatar_storage_key, avatar_url, created_at, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7, $8)`,
+		u.ID, u.Email, u.Phone, u.DisplayName, u.AvatarStorageKey, u.AvatarURL, u.CreatedAt, u.UpdatedAt,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "idx_users_email_lower") {
@@ -138,16 +141,49 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) (*store.User, err
 	return u, nil
 }
 
-func (s *Store) UpdateUser(ctx context.Context, u *store.User) error {
-	u.UpdatedAt = time.Now()
+func (s *Store) UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName string) error {
 	_, err := s.pool.Exec(ctx,
-		`UPDATE users SET email = NULLIF($2, ''), phone = NULLIF($3, ''),
-		 display_name = $4, avatar_url = $5, updated_at = $6
+		`UPDATE users
+		 SET display_name = $2,
+		     updated_at = now()
 		 WHERE id = $1`,
-		u.ID, u.Email, u.Phone, u.DisplayName, u.AvatarURL, u.UpdatedAt,
+		userID, displayName,
 	)
 	if err != nil {
-		return fmt.Errorf("update user: %w", err)
+		return fmt.Errorf("update user profile: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) UpdateUserAvatar(ctx context.Context, userID uuid.UUID, avatarStorageKey string) error {
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users
+		 SET avatar_storage_key = $2,
+		     avatar_url = '',
+		     updated_at = now()
+		 WHERE id = $1`,
+		userID, avatarStorageKey,
+	)
+	if err != nil {
+		return fmt.Errorf("update user avatar: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) SetUserPhoneIfEmpty(ctx context.Context, userID uuid.UUID, phone string) error {
+	if strings.TrimSpace(phone) == "" {
+		return nil
+	}
+	_, err := s.pool.Exec(ctx,
+		`UPDATE users
+		 SET phone = $2,
+		     updated_at = now()
+		 WHERE id = $1
+		   AND COALESCE(phone, '') = ''`,
+		userID, phone,
+	)
+	if err != nil {
+		return fmt.Errorf("set user phone if empty: %w", err)
 	}
 	return nil
 }
@@ -338,9 +374,10 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 	if email != "" {
 		var user store.User
 		err = tx.QueryRow(ctx,
-			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at, merged_into, merged_at
+			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name,
+			        COALESCE(avatar_storage_key, ''), avatar_url, created_at, updated_at, merged_into, merged_at
 			 FROM users WHERE lower(email) = lower($1) AND merged_into IS NULL`, email,
-		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt, &user.MergedInto, &user.MergedAt)
+		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarStorageKey, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt, &user.MergedInto, &user.MergedAt)
 
 		if err == nil {
 			if acct.EmailVerified {
@@ -363,9 +400,10 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 	if phone != "" {
 		var user store.User
 		err = tx.QueryRow(ctx,
-			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name, avatar_url, created_at, updated_at, merged_into, merged_at
+			`SELECT id, COALESCE(email, ''), COALESCE(phone, ''), display_name,
+			        COALESCE(avatar_storage_key, ''), avatar_url, created_at, updated_at, merged_into, merged_at
 			 FROM users WHERE phone = $1 AND merged_into IS NULL`, phone,
-		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt, &user.MergedInto, &user.MergedAt)
+		).Scan(&user.ID, &user.Email, &user.Phone, &user.DisplayName, &user.AvatarStorageKey, &user.AvatarURL, &user.CreatedAt, &user.UpdatedAt, &user.MergedInto, &user.MergedAt)
 
 		if err == nil {
 			if err := s.insertOAuthAccountTx(ctx, tx, acct, user.ID); err != nil {
@@ -399,8 +437,8 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 	newUser.UpdatedAt = now
 
 	_, err = tx.Exec(ctx,
-		`INSERT INTO users (id, email, phone, display_name, avatar_url, created_at, updated_at)
-		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, $5, $6, $7)`,
+		`INSERT INTO users (id, email, phone, display_name, avatar_storage_key, avatar_url, created_at, updated_at)
+		 VALUES ($1, NULLIF($2, ''), NULLIF($3, ''), $4, '', $5, $6, $7)`,
 		newUser.ID, newUser.Email, newUser.Phone, newUser.DisplayName, newUser.AvatarURL, newUser.CreatedAt, newUser.UpdatedAt,
 	)
 	if err != nil {
@@ -491,7 +529,7 @@ func (s *Store) SearchUsers(ctx context.Context, params store.UserSearchParams) 
 	prefixPattern := escapeLikePattern(query) + "%"
 
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, COALESCE(email, ''), display_name, avatar_url
+		`SELECT id, COALESCE(email, ''), display_name, COALESCE(avatar_storage_key, ''), avatar_url
 		 FROM users
 		 WHERE merged_into IS NULL
 		   AND (
@@ -521,7 +559,7 @@ func (s *Store) SearchUsers(ctx context.Context, params store.UserSearchParams) 
 	out := make([]store.UserSearchResult, 0, params.Limit)
 	for rows.Next() {
 		var row store.UserSearchResult
-		if err := rows.Scan(&row.ID, &row.Email, &row.DisplayName, &row.AvatarURL); err != nil {
+		if err := rows.Scan(&row.ID, &row.Email, &row.DisplayName, &row.AvatarStorageKey, &row.AvatarURL); err != nil {
 			return nil, fmt.Errorf("scanning searched user: %w", err)
 		}
 		out = append(out, row)
@@ -804,10 +842,10 @@ func (s *Store) MergeUsers(ctx context.Context, targetID, sourceID uuid.UUID) er
 
 	// Smart profile merge: read source values, then NULL them on source
 	// to release unique index slots, then copy into target gaps.
-	var srcEmail, srcPhone, srcDisplayName, srcAvatarURL *string
+	var srcEmail, srcPhone, srcDisplayName, srcAvatarStorageKey, srcAvatarURL *string
 	err = tx.QueryRow(ctx,
-		`SELECT email, phone, display_name, avatar_url FROM users WHERE id = $1`, sourceID,
-	).Scan(&srcEmail, &srcPhone, &srcDisplayName, &srcAvatarURL)
+		`SELECT email, phone, display_name, avatar_storage_key, avatar_url FROM users WHERE id = $1`, sourceID,
+	).Scan(&srcEmail, &srcPhone, &srcDisplayName, &srcAvatarStorageKey, &srcAvatarURL)
 	if err != nil {
 		return fmt.Errorf("reading source profile: %w", err)
 	}
@@ -825,10 +863,14 @@ func (s *Store) MergeUsers(ctx context.Context, targetID, sourceID uuid.UUID) er
 		   email = CASE WHEN COALESCE(email, '') = '' THEN $2 ELSE email END,
 		   phone = CASE WHEN COALESCE(phone, '') = '' THEN $3 ELSE phone END,
 		   display_name = CASE WHEN display_name = '' AND $4 != '' THEN $4 ELSE display_name END,
-		   avatar_url = CASE WHEN avatar_url = '' AND $5 != '' THEN $5 ELSE avatar_url END,
+		   avatar_storage_key = CASE WHEN COALESCE(avatar_storage_key, '') = '' AND $5 != '' THEN $5 ELSE avatar_storage_key END,
+		   avatar_url = CASE
+		     WHEN COALESCE(avatar_storage_key, '') = '' AND $5 = '' AND avatar_url = '' AND $6 != '' THEN $6
+		     ELSE avatar_url
+		   END,
 		   updated_at = now()
 		 WHERE id = $1`,
-		targetID, srcEmail, srcPhone, derefStr(srcDisplayName), derefStr(srcAvatarURL),
+		targetID, srcEmail, srcPhone, derefStr(srcDisplayName), derefStr(srcAvatarStorageKey), derefStr(srcAvatarURL),
 	); err != nil {
 		return fmt.Errorf("merging profile: %w", err)
 	}

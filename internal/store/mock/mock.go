@@ -107,15 +107,43 @@ func (s *Store) CreateUser(_ context.Context, u *store.User) (*store.User, error
 	return u, nil
 }
 
-func (s *Store) UpdateUser(_ context.Context, u *store.User) error {
+func (s *Store) SetUserPhoneIfEmpty(_ context.Context, userID uuid.UUID, phone string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.users[u.ID]; !ok {
+	u, ok := s.users[userID]
+	if !ok {
 		return store.ErrNotFound
 	}
+	if strings.TrimSpace(phone) == "" || u.Phone != "" {
+		return nil
+	}
+	u.Phone = phone
 	u.UpdatedAt = time.Now()
-	cp := *u
-	s.users[u.ID] = &cp
+	return nil
+}
+
+func (s *Store) UpdateUserProfile(_ context.Context, userID uuid.UUID, displayName string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	u.DisplayName = displayName
+	u.UpdatedAt = time.Now()
+	return nil
+}
+
+func (s *Store) UpdateUserAvatar(_ context.Context, userID uuid.UUID, avatarStorageKey string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, ok := s.users[userID]
+	if !ok {
+		return store.ErrNotFound
+	}
+	u.AvatarStorageKey = avatarStorageKey
+	u.AvatarURL = ""
+	u.UpdatedAt = time.Now()
 	return nil
 }
 
@@ -215,8 +243,8 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 		_ = s.UpdateOAuthAccount(ctx, existing)
 		user, _ := s.GetUserByID(ctx, existing.UserID)
 		if user.Phone == "" && phone != "" {
+			_ = s.SetUserPhoneIfEmpty(ctx, user.ID, phone)
 			user.Phone = phone
-			_ = s.UpdateUser(ctx, user)
 		}
 		return user, store.ResultExistingLogin, nil
 	}
@@ -716,10 +744,11 @@ func (s *Store) SearchUsers(_ context.Context, params store.UserSearchParams) ([
 
 		ranked = append(ranked, rankedUser{
 			result: store.UserSearchResult{
-				ID:          u.ID,
-				Email:       u.Email,
-				DisplayName: u.DisplayName,
-				AvatarURL:   u.AvatarURL,
+				ID:               u.ID,
+				Email:            u.Email,
+				DisplayName:      u.DisplayName,
+				AvatarStorageKey: u.AvatarStorageKey,
+				AvatarURL:        u.AvatarURL,
 			},
 			rank: rank,
 		})
@@ -920,7 +949,7 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	// Smart profile merge: capture source values, clear unique fields on source,
 	// then fill target gaps — mirrors the Postgres path.
 	srcEmail, srcPhone := source.Email, source.Phone
-	srcDisplayName, srcAvatarURL := source.DisplayName, source.AvatarURL
+	srcDisplayName, srcAvatarStorageKey, srcAvatarURL := source.DisplayName, source.AvatarStorageKey, source.AvatarURL
 
 	source.Email = ""
 	source.Phone = ""
@@ -934,7 +963,10 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	if target.DisplayName == "" && srcDisplayName != "" {
 		target.DisplayName = srcDisplayName
 	}
-	if target.AvatarURL == "" && srcAvatarURL != "" {
+	if target.AvatarStorageKey == "" && srcAvatarStorageKey != "" {
+		target.AvatarStorageKey = srcAvatarStorageKey
+		target.AvatarURL = ""
+	} else if target.AvatarURL == "" && srcAvatarURL != "" {
 		target.AvatarURL = srcAvatarURL
 	}
 	target.UpdatedAt = now

@@ -41,11 +41,14 @@ type User struct {
 	Email       string
 	Phone       string
 	DisplayName string
-	AvatarURL   string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
-	MergedInto  *uuid.UUID
-	MergedAt    *time.Time
+	// AvatarStorageKey is the canonical, user-managed avatar reference stored in csar-s3.
+	AvatarStorageKey string
+	// AvatarURL keeps legacy/provider-backed avatar URLs for backward-compatible reads.
+	AvatarURL  string
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+	MergedInto *uuid.UUID
+	MergedAt   *time.Time
 }
 
 // MergeRecord tracks a pending or completed account merge.
@@ -184,10 +187,11 @@ type UserSearchParams struct {
 
 // UserSearchResult is a browser-safe user summary for admin lookup flows.
 type UserSearchResult struct {
-	ID          uuid.UUID
-	Email       string
-	DisplayName string
-	AvatarURL   string
+	ID               uuid.UUID
+	Email            string
+	DisplayName      string
+	AvatarStorageKey string
+	AvatarURL        string
 }
 
 // ServiceAccount represents an STS service account stored in the database.
@@ -218,8 +222,12 @@ type Store interface {
 	// implementation generates a UUID and returns the created record.
 	CreateUser(ctx context.Context, u *User) (*User, error)
 
-	// UpdateUser updates mutable fields (display_name, avatar_url, email).
-	UpdateUser(ctx context.Context, u *User) error
+	// UpdateUserProfile updates only the self-service editable profile fields.
+	UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName string) error
+
+	// UpdateUserAvatar updates only the canonical avatar storage key.
+	// Implementations should clear any legacy avatar URL when this path is used.
+	UpdateUserAvatar(ctx context.Context, userID uuid.UUID, avatarStorageKey string) error
 
 	// GetOAuthAccount looks up a linked account by (provider, provider_user_id).
 	// Returns ErrNotFound if no link exists.
@@ -240,6 +248,10 @@ type Store interface {
 	// GetUserByPhone returns a user by phone number.
 	// Returns ErrNotFound if no user with that phone exists.
 	GetUserByPhone(ctx context.Context, phone string) (*User, error)
+
+	// SetUserPhoneIfEmpty backfills a phone number for users linked through providers
+	// without allowing arbitrary profile edits through the self-service flow.
+	SetUserPhoneIfEmpty(ctx context.Context, userID uuid.UUID, phone string) error
 
 	// FindOrCreateUser atomically performs the lookup-or-create flow:
 	//  1. Check oauth_accounts for (provider, provider_user_id)

@@ -284,8 +284,7 @@ func handleLinkCallback(
 	if phone != "" {
 		user, err := st.GetUserByID(r.Context(), userID)
 		if err == nil && user.Phone == "" {
-			user.Phone = phone
-			if err := st.UpdateUser(r.Context(), user); err != nil {
+			if err := st.SetUserPhoneIfEmpty(r.Context(), userID, phone); err != nil {
 				logger.Warn("failed to update user phone on link", "user_id", userID, "error", err)
 			}
 		}

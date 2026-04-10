@@ -118,7 +118,7 @@ func (h *Handler) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
 			ID:          users[i].ID.String(),
 			Email:       users[i].Email,
 			DisplayName: users[i].DisplayName,
-			AvatarURL:   users[i].AvatarURL,
+			AvatarURL:   h.resolveAvatarURL(r.Context(), users[i].AvatarStorageKey, users[i].AvatarURL),
 		}
 	}
 
@@ -174,7 +174,7 @@ func (h *Handler) resolveUsersByID(ctx context.Context, ids []uuid.UUID) ([]serv
 		out = append(out, serviceUserResolveItem{
 			ID:          user.ID.String(),
 			DisplayName: user.DisplayName,
-			AvatarURL:   user.AvatarURL,
+			AvatarURL:   h.resolveAvatarURL(ctx, user.AvatarStorageKey, user.AvatarURL),
 		})
 	}
 	return out, nil

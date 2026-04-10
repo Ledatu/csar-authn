@@ -28,6 +28,7 @@ import (
 	"github.com/ledatu/csar-core/observe"
 	"github.com/ledatu/csar-core/tlsx"
 
+	"github.com/ledatu/csar-authn/internal/avatar"
 	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-authn/internal/handler"
 	"github.com/ledatu/csar-authn/internal/oauth"
@@ -208,9 +209,18 @@ func run(
 		logger.Info("central audit client initialized", "base_url", cfg.Audit.RouterBaseURL)
 	}
 
+	var avatarClient *avatar.Client
+	avatarClient, err = avatar.New(&cfg.StorageClient, logger)
+	if err != nil {
+		return fmt.Errorf("initializing avatar client: %w", err)
+	}
+	if avatarClient != nil {
+		logger.Info("avatar client initialized")
+	}
+
 	// --- Routes ---
 	mux := http.NewServeMux()
-	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, passkeySvc, stsHandler, authzClient, auditRecorder, logger, cfg)
+	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, passkeySvc, stsHandler, authzClient, avatarClient, auditRecorder, logger, cfg)
 	h.RegisterRoutes(mux)
 
 	// Health and readiness endpoints.

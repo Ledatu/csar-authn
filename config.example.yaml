@@ -114,3 +114,26 @@ qr_login:
 #       public_key_file: "/etc/csar-authn/keys/second-sa.pub"
 #       allowed_audiences: ["second"]
 #       token_ttl: "30m"
+#
+# --- Avatar storage via router-backed csar-s3 (optional) ---
+# When configured, self-service profile/avatar endpoints call csar-s3 through
+# the router using the shared stsclient.ServiceAuthConfig schema. The authn
+# service mints upload intents under the fixed `authn-avatars` storage scope, so
+# no extra avatar-specific storage env block is needed.
+#
+# storage_client:
+#   router_base_url: "https://csar:8443/svc/s3"
+#   sts_endpoint: "https://authn:8081/sts/token"
+#   assertion_audience: "https://id.aurum-sky.net"
+#   audience: "csar-s3-svc"
+#   service_name: "svc:csar-authn"
+#   router_timeout: "30s"
+#   router_tls:
+#     server_name: "api.aurum-sky.net"
+#   sts_tls:
+#     ca_file: "/etc/csar/tls/ca.pem"
+#     cert_file: "/etc/csar/tls/authn-client.pem"
+#     key_file: "/etc/csar/tls/authn-client-key.pem"
+#   jwt:
+#     private_key_file: "./keys/private.pem"
+#     public_key_file: "./keys/public.pem"

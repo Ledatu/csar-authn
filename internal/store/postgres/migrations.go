@@ -252,6 +252,12 @@ CREATE INDEX IF NOT EXISTS idx_user_attribution_touches_expires
     WHERE replaced_by IS NULL AND consumed_at IS NULL;
 `,
 	},
+	{
+		Name: "014_user_avatar_storage_key",
+		Up: `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_storage_key TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

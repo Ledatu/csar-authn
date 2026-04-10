@@ -32,6 +32,7 @@ type Handler struct {
 	passkeySvc    *passkey.Service
 	stsHandler    *sts.Handler   // nil when STS is not configured
 	authzClient   *AuthzClient   // nil when authz is not configured
+	avatarClient  avatarService  // nil when avatar storage is not configured
 	auditRecorder audit.Recorder // nil when audit is not configured
 	logger        *slog.Logger
 	cfg           atomic.Pointer[config.Config]
@@ -39,7 +40,7 @@ type Handler struct {
 
 // New creates a Handler with all dependencies.
 // stsHandler, authzClient, and auditRecorder may be nil when their features are not enabled.
-func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, stsHandler *sts.Handler, authzClient *AuthzClient, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
+func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient avatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
 	h := &Handler{
 		store:         st,
 		sessionMgr:    sessionMgr,
@@ -48,6 +49,7 @@ func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionMa
 		passkeySvc:    passkeySvc,
 		stsHandler:    stsHandler,
 		authzClient:   authzClient,
+		avatarClient:  avatarClient,
 		auditRecorder: auditRecorder,
 		logger:        logger,
 	}
@@ -103,6 +105,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Current user info: GET /auth/me
 	mux.HandleFunc("GET /auth/me", h.handleMe)
+	mux.HandleFunc("PATCH /auth/me/profile", h.handleUpdateProfile)
+	mux.HandleFunc("POST /auth/me/avatar/upload-intent", h.handleAvatarUploadIntent)
+	mux.HandleFunc("POST /auth/me/avatar", h.handleFinalizeAvatar)
+	mux.HandleFunc("DELETE /auth/me/avatar", h.handleDeleteAvatar)
 
 	// Current user's active sessions: GET /auth/me/sessions
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)
@@ -221,7 +227,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		Email:       user.Email,
 		Phone:       user.Phone,
 		DisplayName: user.DisplayName,
-		AvatarURL:   user.AvatarURL,
+		AvatarURL:   h.resolveAvatarURL(r.Context(), user.AvatarStorageKey, user.AvatarURL),
 		Attribution: attributionStateResponse{},
 	}
 	if passkeys, err := h.store.ListPasskeysByUserID(r.Context(), user.ID); err != nil {
