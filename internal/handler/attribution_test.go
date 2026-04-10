@@ -127,6 +127,73 @@ func TestAttributionCaptureAuthenticatedPersistsAndShowsInAuthMe(t *testing.T) {
 	}
 }
 
+func TestAttributionCaptureAuthenticatedReplacesPreviousActiveTouch(t *testing.T) {
+	h, st, sessMgr := newSessionsHandler(t, nil)
+	userID := sessionsTestUserID
+	st.SeedUser(&store.User{
+		ID:          userID,
+		Email:       "me@test.com",
+		DisplayName: "Me",
+	})
+	sess, err := sessMgr.Create(context.Background(), userID, "ua", "127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	firstReq := httptest.NewRequest(http.MethodPost, "/auth/attribution/capture", strings.NewReader(`{
+		"source_type":"referral",
+		"source_key":"ref-old"
+	}`))
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstReq.AddCookie(&http.Cookie{Name: "session", Value: sess.ID})
+	firstW := httptest.NewRecorder()
+	h.handleCaptureAttribution(firstW, firstReq)
+	if firstW.Code != http.StatusOK {
+		t.Fatalf("first capture expected 200, got %d: %s", firstW.Code, firstW.Body.String())
+	}
+
+	secondReq := httptest.NewRequest(http.MethodPost, "/auth/attribution/capture", strings.NewReader(`{
+		"source_type":"referral",
+		"source_key":"ref-new"
+	}`))
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondReq.AddCookie(&http.Cookie{Name: "session", Value: sess.ID})
+	secondW := httptest.NewRecorder()
+	h.handleCaptureAttribution(secondW, secondReq)
+	if secondW.Code != http.StatusOK {
+		t.Fatalf("second capture expected 200, got %d: %s", secondW.Code, secondW.Body.String())
+	}
+
+	touch, err := st.GetActiveUserAttributionTouch(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if touch.SourceKey != "ref-new" {
+		t.Fatalf("active touch source_key = %q, want ref-new", touch.SourceKey)
+	}
+
+	meReq := httptest.NewRequest(http.MethodGet, "/auth/me", nil)
+	meReq.AddCookie(&http.Cookie{Name: "session", Value: sess.ID})
+	meW := httptest.NewRecorder()
+	h.handleMe(meW, meReq)
+	if meW.Code != http.StatusOK {
+		t.Fatalf("auth/me expected 200, got %d: %s", meW.Code, meW.Body.String())
+	}
+
+	var meBody struct {
+		Attribution attributionStateResponse `json:"attribution"`
+	}
+	if err := json.Unmarshal(meW.Body.Bytes(), &meBody); err != nil {
+		t.Fatal(err)
+	}
+	if meBody.Attribution.ActiveTouch == nil {
+		t.Fatal("expected active touch in /auth/me")
+	}
+	if meBody.Attribution.ActiveTouch.SourceKey != "ref-new" {
+		t.Fatalf("auth/me active source_key = %q, want ref-new", meBody.Attribution.ActiveTouch.SourceKey)
+	}
+}
+
 func TestServiceAttributionResolveAndConsume(t *testing.T) {
 	h, st, _ := newSessionsHandler(t, nil)
 	userID := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")

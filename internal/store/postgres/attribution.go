@@ -107,21 +107,6 @@ func (s *Store) UpsertUserAttributionTouch(ctx context.Context, touch *store.Att
 		return existing, nil
 	}
 
-	if len(active) > 0 {
-		ids := make([]uuid.UUID, 0, len(active))
-		for _, existing := range active {
-			ids = append(ids, existing.ID)
-		}
-		if _, err := tx.Exec(ctx,
-			`UPDATE attribution_touches
-			 SET replaced_by = $2, updated_at = $3
-			 WHERE id = ANY($1)`,
-			ids, touch.ID, now,
-		); err != nil {
-			return nil, fmt.Errorf("replace active attribution touches: %w", err)
-		}
-	}
-
 	created := &store.AttributionTouch{}
 	err = tx.QueryRow(ctx,
 		`INSERT INTO attribution_touches
@@ -153,6 +138,21 @@ func (s *Store) UpsertUserAttributionTouch(ctx context.Context, touch *store.Att
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert attribution touch: %w", err)
+	}
+
+	if len(active) > 0 {
+		ids := make([]uuid.UUID, 0, len(active))
+		for _, existing := range active {
+			ids = append(ids, existing.ID)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE attribution_touches
+			 SET replaced_by = $2, updated_at = $3
+			 WHERE id = ANY($1)`,
+			ids, created.ID, now,
+		); err != nil {
+			return nil, fmt.Errorf("replace active attribution touches: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
