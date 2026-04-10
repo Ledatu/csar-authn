@@ -38,8 +38,11 @@ type Manager struct {
 }
 
 // NewManager initializes Goth providers from config and returns a Manager.
+// Providers that fail to initialize (e.g. unreachable OIDC discovery) are
+// skipped with a warning; startup fails only if zero providers register.
 func NewManager(cfg *config.Config, logger *slog.Logger) (*Manager, error) {
-	if err := applyGothProviders(cfg, logger); err != nil {
+	registered, err := applyGothProviders(cfg, logger)
+	if err != nil {
 		return nil, err
 	}
 
@@ -50,18 +53,19 @@ func NewManager(cfg *config.Config, logger *slog.Logger) (*Manager, error) {
 		allowedRedirectOrigins: buildAllowedOrigins(cfg.AllowedRedirectOrigins),
 		cookieSecure:           cfg.Cookie.Secure,
 		cookieSameSite:         httpx.ParseSameSite(cfg.Cookie.SameSite),
-		trustedProviders:       buildTrustedMap(cfg),
+		trustedProviders:       buildTrustedMap(cfg, registered),
 	}, nil
 }
 
 // Reload re-initializes Goth providers and the trusted map from new config.
 // On error the previous provider set remains active.
 func (m *Manager) Reload(cfg *config.Config) error {
-	if err := applyGothProviders(cfg, m.logger); err != nil {
+	registered, err := applyGothProviders(cfg, m.logger)
+	if err != nil {
 		return err
 	}
 
-	trusted := buildTrustedMap(cfg)
+	trusted := buildTrustedMap(cfg, registered)
 
 	allowed := buildAllowedOrigins(cfg.AllowedRedirectOrigins)
 
@@ -76,8 +80,12 @@ func (m *Manager) Reload(cfg *config.Config) error {
 	return nil
 }
 
-// applyGothProviders sets up the Goth session store and registers all providers.
-func applyGothProviders(cfg *config.Config, logger *slog.Logger) error {
+// applyGothProviders sets up the Goth session store and registers providers on
+// a best-effort basis. Providers that fail to initialize (e.g. unreachable OIDC
+// discovery endpoint) are logged and skipped. Returns the set of successfully
+// registered provider names (lowercased). Returns an error only when zero
+// providers could be registered.
+func applyGothProviders(cfg *config.Config, logger *slog.Logger) (map[string]bool, error) {
 	store := sessions.NewCookieStore([]byte(cfg.OAuth.SessionSecret))
 	store.MaxAge(300)
 	store.Options.HttpOnly = true
@@ -87,6 +95,7 @@ func applyGothProviders(cfg *config.Config, logger *slog.Logger) error {
 
 	goth.ClearProviders()
 
+	registered := make(map[string]bool)
 	var providers []goth.Provider
 	for _, p := range cfg.OAuth.Providers {
 		callbackURL := p.CallbackURL
@@ -95,20 +104,27 @@ func applyGothProviders(cfg *config.Config, logger *slog.Logger) error {
 		}
 		provider, err := createProvider(p, callbackURL)
 		if err != nil {
-			return fmt.Errorf("provider %s: %w", p.Name, err)
+			logger.Error("skipping oauth provider (will retry on config reload)",
+				"name", p.Name, "error", err)
+			continue
 		}
 		providers = append(providers, provider)
+		registered[strings.ToLower(p.Name)] = true
 		logger.Info("registered oauth provider", "name", p.Name, "callback", callbackURL)
 	}
+	if len(providers) == 0 {
+		return nil, fmt.Errorf("no oauth providers could be initialized (%d configured)", len(cfg.OAuth.Providers))
+	}
 	goth.UseProviders(providers...)
-	return nil
+	return registered, nil
 }
 
-func buildTrustedMap(cfg *config.Config) map[string]bool {
+func buildTrustedMap(cfg *config.Config, registered map[string]bool) map[string]bool {
 	trusted := make(map[string]bool)
 	for _, p := range cfg.OAuth.Providers {
-		if p.Trusted {
-			trusted[strings.ToLower(p.Name)] = true
+		name := strings.ToLower(p.Name)
+		if p.Trusted && registered[name] {
+			trusted[name] = true
 		}
 	}
 	return trusted
