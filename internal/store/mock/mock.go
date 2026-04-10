@@ -134,14 +134,16 @@ func (s *Store) UpdateUserProfile(_ context.Context, userID uuid.UUID, displayNa
 	return nil
 }
 
-func (s *Store) UpdateUserAvatar(_ context.Context, userID uuid.UUID, avatarStorageKey string) error {
+func (s *Store) UpdateUserAvatar(_ context.Context, userID uuid.UUID, avatar store.ManagedAvatar) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, ok := s.users[userID]
 	if !ok {
 		return store.ErrNotFound
 	}
-	u.AvatarStorageKey = avatarStorageKey
+	u.AvatarStorageKey = avatar.DefaultStorageKey
+	u.AvatarPreviewStorageKey = avatar.PreviewStorageKey
+	u.AvatarMasterStorageKey = avatar.MasterStorageKey
 	u.AvatarURL = ""
 	u.UpdatedAt = time.Now()
 	return nil
@@ -744,11 +746,12 @@ func (s *Store) SearchUsers(_ context.Context, params store.UserSearchParams) ([
 
 		ranked = append(ranked, rankedUser{
 			result: store.UserSearchResult{
-				ID:               u.ID,
-				Email:            u.Email,
-				DisplayName:      u.DisplayName,
-				AvatarStorageKey: u.AvatarStorageKey,
-				AvatarURL:        u.AvatarURL,
+				ID:                      u.ID,
+				Email:                   u.Email,
+				DisplayName:             u.DisplayName,
+				AvatarStorageKey:        u.AvatarStorageKey,
+				AvatarPreviewStorageKey: u.AvatarPreviewStorageKey,
+				AvatarURL:               u.AvatarURL,
 			},
 			rank: rank,
 		})
@@ -949,7 +952,7 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	// Smart profile merge: capture source values, clear unique fields on source,
 	// then fill target gaps — mirrors the Postgres path.
 	srcEmail, srcPhone := source.Email, source.Phone
-	srcDisplayName, srcAvatarStorageKey, srcAvatarURL := source.DisplayName, source.AvatarStorageKey, source.AvatarURL
+	srcDisplayName, srcAvatarStorageKey, srcAvatarPreviewStorageKey, srcAvatarMasterStorageKey, srcAvatarURL := source.DisplayName, source.AvatarStorageKey, source.AvatarPreviewStorageKey, source.AvatarMasterStorageKey, source.AvatarURL
 
 	source.Email = ""
 	source.Phone = ""
@@ -965,6 +968,8 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	}
 	if target.AvatarStorageKey == "" && srcAvatarStorageKey != "" {
 		target.AvatarStorageKey = srcAvatarStorageKey
+		target.AvatarPreviewStorageKey = srcAvatarPreviewStorageKey
+		target.AvatarMasterStorageKey = srcAvatarMasterStorageKey
 		target.AvatarURL = ""
 	} else if target.AvatarURL == "" && srcAvatarURL != "" {
 		target.AvatarURL = srcAvatarURL

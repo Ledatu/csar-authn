@@ -43,6 +43,10 @@ type User struct {
 	DisplayName string
 	// AvatarStorageKey is the canonical, user-managed avatar reference stored in csar-s3.
 	AvatarStorageKey string
+	// AvatarPreviewStorageKey points to the lightweight preview avatar variant.
+	AvatarPreviewStorageKey string
+	// AvatarMasterStorageKey points to the highest-quality managed avatar variant.
+	AvatarMasterStorageKey string
 	// AvatarURL keeps legacy/provider-backed avatar URLs for backward-compatible reads.
 	AvatarURL  string
 	CreatedAt  time.Time
@@ -187,11 +191,19 @@ type UserSearchParams struct {
 
 // UserSearchResult is a browser-safe user summary for admin lookup flows.
 type UserSearchResult struct {
-	ID               uuid.UUID
-	Email            string
-	DisplayName      string
-	AvatarStorageKey string
-	AvatarURL        string
+	ID                      uuid.UUID
+	Email                   string
+	DisplayName             string
+	AvatarStorageKey        string
+	AvatarPreviewStorageKey string
+	AvatarURL               string
+}
+
+// ManagedAvatar stores the complete managed avatar variant set for a user.
+type ManagedAvatar struct {
+	DefaultStorageKey string
+	PreviewStorageKey string
+	MasterStorageKey  string
 }
 
 // ServiceAccount represents an STS service account stored in the database.
@@ -225,9 +237,9 @@ type Store interface {
 	// UpdateUserProfile updates only the self-service editable profile fields.
 	UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName string) error
 
-	// UpdateUserAvatar updates only the canonical avatar storage key.
+	// UpdateUserAvatar updates the managed avatar storage keys.
 	// Implementations should clear any legacy avatar URL when this path is used.
-	UpdateUserAvatar(ctx context.Context, userID uuid.UUID, avatarStorageKey string) error
+	UpdateUserAvatar(ctx context.Context, userID uuid.UUID, avatar ManagedAvatar) error
 
 	// GetOAuthAccount looks up a linked account by (provider, provider_user_id).
 	// Returns ErrNotFound if no link exists.

@@ -23,10 +23,11 @@ const (
 )
 
 type adminUserListItem struct {
-	ID          string `json:"id"`
-	Email       string `json:"email,omitempty"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
+	ID               string `json:"id"`
+	Email            string `json:"email,omitempty"`
+	DisplayName      string `json:"display_name"`
+	AvatarURL        string `json:"avatar_url,omitempty"`
+	AvatarPreviewURL string `json:"avatar_preview_url,omitempty"`
 }
 
 type adminUserListResponse struct {
@@ -39,9 +40,10 @@ type serviceUserResolveRequest struct {
 }
 
 type serviceUserResolveItem struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-	AvatarURL   string `json:"avatar_url,omitempty"`
+	ID               string `json:"id"`
+	DisplayName      string `json:"display_name"`
+	AvatarURL        string `json:"avatar_url,omitempty"`
+	AvatarPreviewURL string `json:"avatar_preview_url,omitempty"`
 }
 
 type serviceUserResolveResponse struct {
@@ -114,11 +116,13 @@ func (h *Handler) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
 		Limit: limit,
 	}
 	for i := range users {
+		avatarURL, avatarPreviewURL := h.resolveAvatarURLs(r.Context(), users[i].AvatarStorageKey, users[i].AvatarPreviewStorageKey, users[i].AvatarURL)
 		resp.Users[i] = adminUserListItem{
-			ID:          users[i].ID.String(),
-			Email:       users[i].Email,
-			DisplayName: users[i].DisplayName,
-			AvatarURL:   h.resolveAvatarURL(r.Context(), users[i].AvatarStorageKey, users[i].AvatarURL),
+			ID:               users[i].ID.String(),
+			Email:            users[i].Email,
+			DisplayName:      users[i].DisplayName,
+			AvatarURL:        avatarURL,
+			AvatarPreviewURL: avatarPreviewURL,
 		}
 	}
 
@@ -171,10 +175,12 @@ func (h *Handler) resolveUsersByID(ctx context.Context, ids []uuid.UUID) ([]serv
 			}
 			return nil, err
 		}
+		avatarURL, avatarPreviewURL := h.resolveAvatarURLs(ctx, user.AvatarStorageKey, user.AvatarPreviewStorageKey, user.AvatarURL)
 		out = append(out, serviceUserResolveItem{
-			ID:          user.ID.String(),
-			DisplayName: user.DisplayName,
-			AvatarURL:   h.resolveAvatarURL(ctx, user.AvatarStorageKey, user.AvatarURL),
+			ID:               user.ID.String(),
+			DisplayName:      user.DisplayName,
+			AvatarURL:        avatarURL,
+			AvatarPreviewURL: avatarPreviewURL,
 		})
 	}
 	return out, nil

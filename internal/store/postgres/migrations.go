@@ -258,6 +258,13 @@ CREATE INDEX IF NOT EXISTS idx_user_attribution_touches_expires
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_storage_key TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		Name: "015_user_avatar_variant_storage_keys",
+		Up: `
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_preview_storage_key TEXT NOT NULL DEFAULT '';
+ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_master_storage_key TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

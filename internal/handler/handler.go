@@ -107,7 +107,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /auth/me", h.handleMe)
 	mux.HandleFunc("PATCH /auth/me/profile", h.handleUpdateProfile)
 	mux.HandleFunc("POST /auth/me/avatar/upload-intent", h.handleAvatarUploadIntent)
+	mux.HandleFunc("POST /auth/me/avatar/upload-set-intent", h.handleAvatarUploadSetIntent)
 	mux.HandleFunc("POST /auth/me/avatar", h.handleFinalizeAvatar)
+	mux.HandleFunc("POST /auth/me/avatar/finalize-set", h.handleFinalizeAvatarSet)
 	mux.HandleFunc("DELETE /auth/me/avatar", h.handleDeleteAvatar)
 
 	// Current user's active sessions: GET /auth/me/sessions
@@ -212,23 +214,26 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type meResponse struct {
-		ID            string                   `json:"id"`
-		Email         string                   `json:"email,omitempty"`
-		Phone         string                   `json:"phone,omitempty"`
-		DisplayName   string                   `json:"display_name"`
-		AvatarURL     string                   `json:"avatar_url,omitempty"`
-		PasskeysCount int                      `json:"passkeys_count"`
-		Accounts      []linkedAccount          `json:"linked_accounts,omitempty"`
-		Attribution   attributionStateResponse `json:"attribution"`
+		ID               string                   `json:"id"`
+		Email            string                   `json:"email,omitempty"`
+		Phone            string                   `json:"phone,omitempty"`
+		DisplayName      string                   `json:"display_name"`
+		AvatarURL        string                   `json:"avatar_url,omitempty"`
+		AvatarPreviewURL string                   `json:"avatar_preview_url,omitempty"`
+		PasskeysCount    int                      `json:"passkeys_count"`
+		Accounts         []linkedAccount          `json:"linked_accounts,omitempty"`
+		Attribution      attributionStateResponse `json:"attribution"`
 	}
 
+	avatarURL, avatarPreviewURL := h.resolveAvatarURLs(r.Context(), user.AvatarStorageKey, user.AvatarPreviewStorageKey, user.AvatarURL)
 	resp := meResponse{
-		ID:          user.ID.String(),
-		Email:       user.Email,
-		Phone:       user.Phone,
-		DisplayName: user.DisplayName,
-		AvatarURL:   h.resolveAvatarURL(r.Context(), user.AvatarStorageKey, user.AvatarURL),
-		Attribution: attributionStateResponse{},
+		ID:               user.ID.String(),
+		Email:            user.Email,
+		Phone:            user.Phone,
+		DisplayName:      user.DisplayName,
+		AvatarURL:        avatarURL,
+		AvatarPreviewURL: avatarPreviewURL,
+		Attribution:      attributionStateResponse{},
 	}
 	if passkeys, err := h.store.ListPasskeysByUserID(r.Context(), user.ID); err != nil {
 		h.logger.Error("failed to fetch passkeys", "user_id", user.ID, "error", err)

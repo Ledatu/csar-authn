@@ -269,6 +269,12 @@ func TestHandleFinalizeAvatarStoresStorageKeyAndReturnsSignedURL(t *testing.T) {
 	if updated.AvatarStorageKey != "avatars/user-1/new.png" {
 		t.Fatalf("avatar_storage_key = %q", updated.AvatarStorageKey)
 	}
+	if updated.AvatarPreviewStorageKey != "" {
+		t.Fatalf("avatar_preview_storage_key = %q, want empty", updated.AvatarPreviewStorageKey)
+	}
+	if updated.AvatarMasterStorageKey != "" {
+		t.Fatalf("avatar_master_storage_key = %q, want empty", updated.AvatarMasterStorageKey)
+	}
 	if updated.AvatarURL != "" {
 		t.Fatalf("avatar_url = %q, want empty", updated.AvatarURL)
 	}
@@ -295,10 +301,12 @@ func TestHandleDeleteAvatarClearsStorageKey(t *testing.T) {
 	}
 	h, st := newProfileHandler(t, avatarClient)
 	user := &store.User{
-		ID:               uuid.MustParse("44444444-4444-4444-8444-444444444444"),
-		Email:            "delete@test.com",
-		DisplayName:      "Delete User",
-		AvatarStorageKey: "avatars/user-1/current.png",
+		ID:                      uuid.MustParse("44444444-4444-4444-8444-444444444444"),
+		Email:                   "delete@test.com",
+		DisplayName:             "Delete User",
+		AvatarStorageKey:        "avatars/user-1/current.png",
+		AvatarPreviewStorageKey: "avatars/user-1/current-preview.webp",
+		AvatarMasterStorageKey:  "avatars/user-1/current-master.webp",
 	}
 	token := issueProfileBearer(t, h, st, user)
 
@@ -319,7 +327,212 @@ func TestHandleDeleteAvatarClearsStorageKey(t *testing.T) {
 	if updated.AvatarStorageKey != "" {
 		t.Fatalf("avatar_storage_key = %q, want empty", updated.AvatarStorageKey)
 	}
-	if len(deletedKeys) != 1 || deletedKeys[0] != "avatars/user-1/current.png" {
+	if updated.AvatarPreviewStorageKey != "" {
+		t.Fatalf("avatar_preview_storage_key = %q, want empty", updated.AvatarPreviewStorageKey)
+	}
+	if updated.AvatarMasterStorageKey != "" {
+		t.Fatalf("avatar_master_storage_key = %q, want empty", updated.AvatarMasterStorageKey)
+	}
+	if len(deletedKeys) != 3 {
 		t.Fatalf("deleted keys = %#v", deletedKeys)
+	}
+	wantDeleted := map[string]bool{
+		"avatars/user-1/current.png":          true,
+		"avatars/user-1/current-preview.webp": true,
+		"avatars/user-1/current-master.webp":  true,
+	}
+	for _, key := range deletedKeys {
+		if !wantDeleted[key] {
+			t.Fatalf("unexpected deleted key %q in %#v", key, deletedKeys)
+		}
+		delete(wantDeleted, key)
+	}
+	if len(wantDeleted) != 0 {
+		t.Fatalf("deleted keys = %#v", deletedKeys)
+	}
+}
+
+func TestHandleAvatarUploadSetIntentReturnsUploadTargets(t *testing.T) {
+	avatarClient := &mockAvatarClient{
+		createUploadIntentFn: func(req avatar.UploadIntentRequest) (*avatar.UploadIntentResponse, error) {
+			switch req.Filename {
+			case "preview.webp":
+				return &avatar.UploadIntentResponse{
+					UploadToken: "intent-preview",
+					Method:      "PUT",
+					URL:         "https://upload.example.com/preview",
+				}, nil
+			case "default.webp":
+				return &avatar.UploadIntentResponse{
+					UploadToken: "intent-default",
+					Method:      "PUT",
+					URL:         "https://upload.example.com/default",
+				}, nil
+			case "master.webp":
+				return &avatar.UploadIntentResponse{
+					UploadToken: "intent-master",
+					Method:      "PUT",
+					URL:         "https://upload.example.com/master",
+				}, nil
+			default:
+				t.Fatalf("unexpected filename %q", req.Filename)
+				return nil, nil
+			}
+		},
+	}
+	h, st := newProfileHandler(t, avatarClient)
+	user := &store.User{
+		ID:          uuid.MustParse("66666666-6666-4666-8666-666666666666"),
+		Email:       "set-intent@test.com",
+		DisplayName: "Variant Intent",
+	}
+	token := issueProfileBearer(t, h, st, user)
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/me/avatar/upload-set-intent", strings.NewReader(`{
+		"assets":[
+			{"kind":"preview","filename":"preview.webp","content_type":"image/webp","content_length":111},
+			{"kind":"default","filename":"default.webp","content_type":"image/webp","content_length":222},
+			{"kind":"master","filename":"master.webp","content_type":"image/webp","content_length":333}
+		]
+	}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	h.handleAvatarUploadSetIntent(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		UploadToken string `json:"upload_token"`
+		Assets      map[string]struct {
+			URL string `json:"url"`
+		} `json:"assets"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.UploadToken == "" {
+		t.Fatal("expected upload token")
+	}
+	if resp.Assets["preview"].URL != "https://upload.example.com/preview" {
+		t.Fatalf("preview url = %q", resp.Assets["preview"].URL)
+	}
+	if resp.Assets["default"].URL != "https://upload.example.com/default" {
+		t.Fatalf("default url = %q", resp.Assets["default"].URL)
+	}
+	if resp.Assets["master"].URL != "https://upload.example.com/master" {
+		t.Fatalf("master url = %q", resp.Assets["master"].URL)
+	}
+}
+
+func TestHandleFinalizeAvatarSetStoresVariantKeysAndReturnsPreviewURL(t *testing.T) {
+	var deletedKeys []string
+	avatarClient := &mockAvatarClient{
+		finalizeAvatarFn: func(req avatar.FinalizeAvatarRequest) (*avatar.FinalizeAvatarResponse, error) {
+			switch req.UploadToken {
+			case "intent-preview":
+				return &avatar.FinalizeAvatarResponse{
+					StorageKey:  "avatars/user-1/new-preview.webp",
+					ContentType: "image/webp",
+				}, nil
+			case "intent-default":
+				return &avatar.FinalizeAvatarResponse{
+					StorageKey:  "avatars/user-1/new-default.webp",
+					ContentType: "image/webp",
+				}, nil
+			case "intent-master":
+				return &avatar.FinalizeAvatarResponse{
+					StorageKey:  "avatars/user-1/new-master.webp",
+					ContentType: "image/webp",
+				}, nil
+			default:
+				t.Fatalf("unexpected upload token %q", req.UploadToken)
+				return nil, nil
+			}
+		},
+		deleteObjectFn: func(storageKey string) error {
+			deletedKeys = append(deletedKeys, storageKey)
+			return nil
+		},
+		signedReadURLFn: func(storageKey string) (string, error) {
+			return "https://signed.example.com/" + storageKey, nil
+		},
+	}
+	h, st := newProfileHandler(t, avatarClient)
+	user := &store.User{
+		ID:                      uuid.MustParse("77777777-7777-4777-8777-777777777777"),
+		Email:                   "set-finalize@test.com",
+		DisplayName:             "Variant Finalize",
+		AvatarStorageKey:        "avatars/user-1/old-default.webp",
+		AvatarPreviewStorageKey: "avatars/user-1/old-preview.webp",
+		AvatarMasterStorageKey:  "avatars/user-1/old-master.webp",
+	}
+	token := issueProfileBearer(t, h, st, user)
+
+	uploadToken, err := h.issueAvatarUploadSetToken(user.ID.String(), map[string]string{
+		avatarVariantPreview: "intent-preview",
+		avatarVariantDefault: "intent-default",
+		avatarVariantMaster:  "intent-master",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/auth/me/avatar/finalize-set", strings.NewReader(`{"upload_token":"`+uploadToken+`"}`))
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+
+	h.handleFinalizeAvatarSet(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	updated, err := st.GetUserByID(req.Context(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.AvatarStorageKey != "avatars/user-1/new-default.webp" {
+		t.Fatalf("avatar_storage_key = %q", updated.AvatarStorageKey)
+	}
+	if updated.AvatarPreviewStorageKey != "avatars/user-1/new-preview.webp" {
+		t.Fatalf("avatar_preview_storage_key = %q", updated.AvatarPreviewStorageKey)
+	}
+	if updated.AvatarMasterStorageKey != "avatars/user-1/new-master.webp" {
+		t.Fatalf("avatar_master_storage_key = %q", updated.AvatarMasterStorageKey)
+	}
+	if updated.AvatarURL != "" {
+		t.Fatalf("avatar_url = %q, want empty", updated.AvatarURL)
+	}
+
+	var resp profileResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.AvatarURL != "https://signed.example.com/avatars/user-1/new-default.webp" {
+		t.Fatalf("avatar_url = %q", resp.AvatarURL)
+	}
+	if resp.AvatarPreviewURL != "https://signed.example.com/avatars/user-1/new-preview.webp" {
+		t.Fatalf("avatar_preview_url = %q", resp.AvatarPreviewURL)
+	}
+
+	wantDeleted := map[string]bool{
+		"avatars/user-1/old-default.webp": true,
+		"avatars/user-1/old-preview.webp": true,
+		"avatars/user-1/old-master.webp":  true,
+	}
+	if len(deletedKeys) != len(wantDeleted) {
+		t.Fatalf("deleted keys = %#v", deletedKeys)
+	}
+	for _, key := range deletedKeys {
+		if !wantDeleted[key] {
+			t.Fatalf("unexpected deleted key %q in %#v", key, deletedKeys)
+		}
+		delete(wantDeleted, key)
+	}
+	if len(wantDeleted) != 0 {
+		t.Fatalf("missing deleted keys: %#v", wantDeleted)
 	}
 }
