@@ -199,6 +199,18 @@ func handleLoginCallback(
 		logger.Info("existing user authenticated", "user_id", user.ID, "email", user.Email)
 	}
 
+	if touch, err := ReadAttributionCookie(r); err == nil {
+		touch.UserID = user.ID
+		if _, err := st.UpsertUserAttributionTouch(r.Context(), touch); err != nil {
+			logger.Warn("failed to persist attribution touch on login", "user_id", user.ID, "error", err)
+		} else {
+			ClearAttributionCookie(w, cookieSecure, cookieSameSite)
+		}
+	} else if !errors.Is(err, http.ErrNoCookie) {
+		logger.Warn("invalid attribution cookie on login callback", "error", err)
+		ClearAttributionCookie(w, cookieSecure, cookieSameSite)
+	}
+
 	sess, err := sessMgr.Create(r.Context(), user.ID, r.UserAgent(), r.RemoteAddr)
 	if err != nil {
 		logger.Error("session creation failed", "error", err)

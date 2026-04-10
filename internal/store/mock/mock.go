@@ -18,27 +18,29 @@ import (
 
 // Store is a thread-safe in-memory implementation of store.Store.
 type Store struct {
-	mu                sync.Mutex
-	users             map[uuid.UUID]*store.User
-	accounts          map[string]*store.OAuthAccount // key: provider|provider_user_id
-	passkeys          map[uuid.UUID]*store.Passkey
-	passkeyChallenges map[uuid.UUID]*store.PasskeyChallenge
-	serviceAccounts   map[string]*store.ServiceAccount // key: name
-	sessions          map[string]*store.Session        // key: session ID
-	mergeRecords      map[string]*store.MergeRecord    // key: token_hash
-	botVerifications  map[uuid.UUID]*store.BotVerification
-	loginHandoffs     map[uuid.UUID]*store.LoginHandoff
+	mu                 sync.Mutex
+	users              map[uuid.UUID]*store.User
+	accounts           map[string]*store.OAuthAccount // key: provider|provider_user_id
+	attributionTouches map[uuid.UUID]*store.AttributionTouch
+	passkeys           map[uuid.UUID]*store.Passkey
+	passkeyChallenges  map[uuid.UUID]*store.PasskeyChallenge
+	serviceAccounts    map[string]*store.ServiceAccount // key: name
+	sessions           map[string]*store.Session        // key: session ID
+	mergeRecords       map[string]*store.MergeRecord    // key: token_hash
+	botVerifications   map[uuid.UUID]*store.BotVerification
+	loginHandoffs      map[uuid.UUID]*store.LoginHandoff
 }
 
 // New returns a new mock Store.
 func New() *Store {
 	return &Store{
-		users:             make(map[uuid.UUID]*store.User),
-		accounts:          make(map[string]*store.OAuthAccount),
-		passkeys:          make(map[uuid.UUID]*store.Passkey),
-		passkeyChallenges: make(map[uuid.UUID]*store.PasskeyChallenge),
-		serviceAccounts:   make(map[string]*store.ServiceAccount),
-		loginHandoffs:     make(map[uuid.UUID]*store.LoginHandoff),
+		users:              make(map[uuid.UUID]*store.User),
+		accounts:           make(map[string]*store.OAuthAccount),
+		attributionTouches: make(map[uuid.UUID]*store.AttributionTouch),
+		passkeys:           make(map[uuid.UUID]*store.Passkey),
+		passkeyChallenges:  make(map[uuid.UUID]*store.PasskeyChallenge),
+		serviceAccounts:    make(map[string]*store.ServiceAccount),
+		loginHandoffs:      make(map[uuid.UUID]*store.LoginHandoff),
 	}
 }
 
@@ -766,6 +768,84 @@ func userSearchRank(hasExactID bool, exactID uuid.UUID, idText, email, displayNa
 	default:
 		return 0, false
 	}
+}
+
+func (s *Store) UpsertUserAttributionTouch(_ context.Context, touch *store.AttributionTouch) (*store.AttributionTouch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if touch.ID == uuid.Nil {
+		touch.ID = uuid.New()
+	}
+	now := time.Now()
+	if touch.TouchedAt.IsZero() {
+		touch.TouchedAt = now
+	}
+	if touch.CreatedAt.IsZero() {
+		touch.CreatedAt = now
+	}
+	touch.UpdatedAt = now
+
+	for _, existing := range s.attributionTouches {
+		if existing.UserID != touch.UserID || existing.ReplacedBy != nil || existing.ConsumedAt != nil || !now.Before(existing.ExpiresAt) {
+			continue
+		}
+		if store.SameAttributionTouchSource(existing, touch) {
+			existing.TouchedAt = touch.TouchedAt
+			existing.ExpiresAt = touch.ExpiresAt
+			existing.SourceMetadata = store.CloneAttributionMetadata(touch.SourceMetadata)
+			existing.UpdatedAt = now
+			cp := *existing
+			cp.SourceMetadata = store.CloneAttributionMetadata(existing.SourceMetadata)
+			return &cp, nil
+		}
+		replacedBy := touch.ID
+		existing.ReplacedBy = &replacedBy
+		existing.UpdatedAt = now
+	}
+
+	cp := *touch
+	cp.SourceMetadata = store.CloneAttributionMetadata(touch.SourceMetadata)
+	s.attributionTouches[cp.ID] = &cp
+	return &cp, nil
+}
+
+func (s *Store) GetActiveUserAttributionTouch(_ context.Context, userID uuid.UUID) (*store.AttributionTouch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	var latest *store.AttributionTouch
+	for _, touch := range s.attributionTouches {
+		if touch.UserID != userID || touch.ReplacedBy != nil || touch.ConsumedAt != nil || !now.Before(touch.ExpiresAt) {
+			continue
+		}
+		if latest == nil || touch.TouchedAt.After(latest.TouchedAt) {
+			latest = touch
+		}
+	}
+	if latest == nil {
+		return nil, store.ErrNotFound
+	}
+	cp := *latest
+	cp.SourceMetadata = store.CloneAttributionMetadata(latest.SourceMetadata)
+	return &cp, nil
+}
+
+func (s *Store) ConsumeUserAttributionTouch(_ context.Context, userID, touchID uuid.UUID) (*store.AttributionTouch, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	touch, ok := s.attributionTouches[touchID]
+	if !ok || touch.UserID != userID || touch.ReplacedBy != nil || touch.ConsumedAt != nil || !time.Now().Before(touch.ExpiresAt) {
+		return nil, store.ErrAttributionUnavailable
+	}
+	now := time.Now()
+	touch.ConsumedAt = &now
+	touch.UpdatedAt = now
+	cp := *touch
+	cp.SourceMetadata = store.CloneAttributionMetadata(touch.SourceMetadata)
+	return &cp, nil
 }
 
 // ---------------------------------------------------------------------------

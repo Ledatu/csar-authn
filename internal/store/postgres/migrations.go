@@ -228,6 +228,30 @@ CREATE INDEX IF NOT EXISTS idx_login_handoffs_expires
     ON login_handoffs (expires_at) WHERE status IN ('pending', 'approved');
 `,
 	},
+	{
+		Name: "013_user_attribution_touches",
+		Up: `
+CREATE TABLE IF NOT EXISTS attribution_touches (
+    id              UUID PRIMARY KEY,
+    user_id         UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    source_type     TEXT NOT NULL,
+    source_key      TEXT NOT NULL,
+    source_metadata JSONB,
+    touched_at      TIMESTAMPTZ NOT NULL,
+    expires_at      TIMESTAMPTZ NOT NULL,
+    consumed_at     TIMESTAMPTZ,
+    replaced_by     UUID REFERENCES attribution_touches(id),
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_attribution_touches_user_active
+    ON attribution_touches (user_id, touched_at DESC)
+    WHERE replaced_by IS NULL AND consumed_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_user_attribution_touches_expires
+    ON attribution_touches (expires_at)
+    WHERE replaced_by IS NULL AND consumed_at IS NULL;
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

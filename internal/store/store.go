@@ -23,6 +23,7 @@ var (
 	ErrUserAlreadyMerged       = errors.New("source user has already been merged")
 	ErrSelfMerge               = errors.New("cannot merge a user into itself")
 	ErrLoginHandoffUnavailable = errors.New("login handoff is unavailable")
+	ErrAttributionUnavailable  = errors.New("attribution touch is unavailable")
 )
 
 // FindOrCreateResult indicates the outcome of FindOrCreateUser.
@@ -333,6 +334,20 @@ type Store interface {
 	// SearchUsers returns bounded browser-safe user summaries for admin lookup flows.
 	// Implementations should exclude merged users and respect the requested limit.
 	SearchUsers(ctx context.Context, params UserSearchParams) ([]UserSearchResult, error)
+
+	// --- Attribution ---
+
+	// UpsertUserAttributionTouch stores the current active attribution touch for a user.
+	// Implementations may replace or refresh the existing active touch based on the payload.
+	UpsertUserAttributionTouch(ctx context.Context, touch *AttributionTouch) (*AttributionTouch, error)
+
+	// GetActiveUserAttributionTouch returns the user's current active, unconsumed touch.
+	// Returns ErrNotFound if no active touch exists.
+	GetActiveUserAttributionTouch(ctx context.Context, userID uuid.UUID) (*AttributionTouch, error)
+
+	// ConsumeUserAttributionTouch marks the current active touch as consumed.
+	// Returns ErrAttributionUnavailable if the touch is missing, expired, replaced, or already consumed.
+	ConsumeUserAttributionTouch(ctx context.Context, userID, touchID uuid.UUID) (*AttributionTouch, error)
 
 	// --- Account Merge ---
 

@@ -97,6 +97,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/qr-login/approve", h.handleQRLoginApprove)
 	mux.HandleFunc("POST /auth/qr-login/deny", h.handleQRLoginDeny)
 
+	// Generic first-party attribution state for browser capture and current state.
+	mux.HandleFunc("POST /auth/attribution/capture", h.handleCaptureAttribution)
+	mux.HandleFunc("GET /auth/attribution/current", h.handleCurrentAttribution)
+
 	// Current user info: GET /auth/me
 	mux.HandleFunc("GET /auth/me", h.handleMe)
 
@@ -116,6 +120,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Session validation for router subrequests: GET /auth/validate
 	mux.HandleFunc("GET /auth/validate", h.handleValidate)
+
+	// Generic service-to-service attribution primitives.
+	mux.HandleFunc("POST /svc/authn/attribution/resolve", h.handleResolveServiceAttribution)
+	mux.HandleFunc("POST /svc/authn/attribution/consume", h.handleConsumeServiceAttribution)
 
 	// JWKS endpoint: GET /.well-known/jwks.json
 	mux.Handle("GET /.well-known/jwks.json", session.JWKSHandler(h.sessionMgr))
@@ -198,13 +206,14 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type meResponse struct {
-		ID            string          `json:"id"`
-		Email         string          `json:"email,omitempty"`
-		Phone         string          `json:"phone,omitempty"`
-		DisplayName   string          `json:"display_name"`
-		AvatarURL     string          `json:"avatar_url,omitempty"`
-		PasskeysCount int             `json:"passkeys_count"`
-		Accounts      []linkedAccount `json:"linked_accounts,omitempty"`
+		ID            string                   `json:"id"`
+		Email         string                   `json:"email,omitempty"`
+		Phone         string                   `json:"phone,omitempty"`
+		DisplayName   string                   `json:"display_name"`
+		AvatarURL     string                   `json:"avatar_url,omitempty"`
+		PasskeysCount int                      `json:"passkeys_count"`
+		Accounts      []linkedAccount          `json:"linked_accounts,omitempty"`
+		Attribution   attributionStateResponse `json:"attribution"`
 	}
 
 	resp := meResponse{
@@ -213,6 +222,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		Phone:       user.Phone,
 		DisplayName: user.DisplayName,
 		AvatarURL:   user.AvatarURL,
+		Attribution: attributionStateResponse{},
 	}
 	if passkeys, err := h.store.ListPasskeysByUserID(r.Context(), user.ID); err != nil {
 		h.logger.Error("failed to fetch passkeys", "user_id", user.ID, "error", err)
@@ -228,6 +238,16 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 			EmailVerified:  a.EmailVerified,
 			Metadata:       a.ProviderMetadata,
 		})
+	}
+
+	if touch, err := h.store.GetActiveUserAttributionTouch(r.Context(), user.ID); err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			h.logger.Error("failed to fetch active attribution touch", "user_id", user.ID, "error", err)
+		}
+	} else {
+		resp.Attribution.ActiveTouch = attributionTouchToResponse(touch)
+		resp.Attribution.PendingQualification = true
+		resp.Attribution.Source = "user"
 	}
 
 	w.Header().Set("Content-Type", "application/json")
