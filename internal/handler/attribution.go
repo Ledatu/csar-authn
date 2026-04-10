@@ -48,7 +48,6 @@ type attributionTouchResponse struct {
 	Subject        string            `json:"subject,omitempty"`
 	SourceType     string            `json:"source_type,omitempty"`
 	SourceKey      string            `json:"source_key,omitempty"`
-	SourceID       string            `json:"source_id,omitempty"`
 	SourceMetadata map[string]string `json:"source_metadata,omitempty"`
 	Metadata       map[string]string `json:"metadata,omitempty"`
 	TouchedAt      time.Time         `json:"touched_at"`
@@ -231,7 +230,6 @@ func attributionTouchToResponse(touch *store.AttributionTouch) *attributionTouch
 	resp := &attributionTouchResponse{
 		SourceType:     touch.SourceType,
 		SourceKey:      touch.SourceKey,
-		SourceID:       touch.SourceKey,
 		SourceMetadata: store.CloneAttributionMetadata(touch.SourceMetadata),
 		Metadata:       store.CloneAttributionMetadata(touch.SourceMetadata),
 		TouchedAt:      touch.TouchedAt,
