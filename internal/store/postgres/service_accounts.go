@@ -70,6 +70,9 @@ func (s *Store) CreateServiceAccount(ctx context.Context, sa *store.ServiceAccou
 		sa.Status, sa.CreatedAt,
 	)
 	if err != nil {
+		if pgutil.IsDuplicateKey(err) {
+			return store.ErrAlreadyExists
+		}
 		return fmt.Errorf("create service account: %w", err)
 	}
 	return nil

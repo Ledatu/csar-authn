@@ -159,6 +159,13 @@ func TestSA_CreateAndList(t *testing.T) {
 	if created.Status != "active" {
 		t.Errorf("status = %q, want %q", created.Status, "active")
 	}
+	var createdRaw map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &createdRaw); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := createdRaw["allow_all_audiences"]; !ok || v != false {
+		t.Errorf("allow_all_audiences = %v (present=%t), want false and present", v, ok)
+	}
 
 	// List.
 	req = httptest.NewRequest(http.MethodGet, "/admin/service-accounts", nil)
@@ -178,6 +185,42 @@ func TestSA_CreateAndList(t *testing.T) {
 	}
 	if list[0].Name != "my-sa" {
 		t.Errorf("list[0].name = %q, want %q", list[0].Name, "my-sa")
+	}
+	var listRaw []map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &listRaw); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := listRaw[0]["allow_all_audiences"]; !ok || v != false {
+		t.Errorf("list[0].allow_all_audiences = %v (present=%t), want false and present", v, ok)
+	}
+}
+
+func TestSA_DuplicateCreateReturnsConflict(t *testing.T) {
+	th := newSATestHarness(t)
+	token := th.issueToken(t, saTestUserID)
+
+	body, _ := json.Marshal(createSARequest{
+		Name:             "duplicate-sa",
+		PublicKeyPEM:     testPEM(t),
+		AllowedAudiences: []string{"aud-a"},
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/admin/service-accounts", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	th.handler.handleCreateServiceAccount(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("first create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/admin/service-accounts", bytes.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+	w = httptest.NewRecorder()
+	th.handler.handleCreateServiceAccount(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("duplicate create: expected 409, got %d: %s", w.Code, w.Body.String())
 	}
 }
 

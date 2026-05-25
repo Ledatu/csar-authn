@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -499,7 +498,7 @@ func (s *Store) CreateServiceAccount(_ context.Context, sa *store.ServiceAccount
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, ok := s.serviceAccounts[sa.Name]; ok {
-		return fmt.Errorf("service account %q already exists", sa.Name)
+		return store.ErrAlreadyExists
 	}
 	if sa.Status == "" {
 		sa.Status = "active"

@@ -66,7 +66,7 @@ func (h *Handler) reloadSTS(r *http.Request) error {
 type saResponse struct {
 	Name              string   `json:"name"`
 	AllowedAudiences  []string `json:"allowed_audiences"`
-	AllowAllAudiences bool     `json:"allow_all_audiences,omitempty"`
+	AllowAllAudiences bool     `json:"allow_all_audiences"`
 	TokenTTL          string   `json:"token_ttl"`
 	Status            string   `json:"status"`
 	CreatedAt         int64    `json:"created_at"`
@@ -188,6 +188,10 @@ func (h *Handler) handleCreateServiceAccount(w http.ResponseWriter, r *http.Requ
 	}
 
 	if err := h.store.CreateServiceAccount(r.Context(), sa); err != nil {
+		if errors.Is(err, store.ErrAlreadyExists) {
+			apierror.New("conflict", http.StatusConflict, "service account already exists").Write(w)
+			return
+		}
 		h.logger.Error("failed to create service account", "name", body.Name, "error", err)
 		apierror.New("internal_error", http.StatusInternalServerError, "failed to create service account").Write(w)
 		return

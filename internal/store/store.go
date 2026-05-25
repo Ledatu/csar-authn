@@ -15,6 +15,7 @@ import (
 // Sentinel errors returned by Store implementations.
 var (
 	ErrNotFound                = errors.New("not found")
+	ErrAlreadyExists           = errors.New("already exists")
 	ErrUnverifiedEmailConflict = errors.New("email matches existing user but provider email is not verified")
 	ErrProviderAlreadyLinked   = errors.New("provider account is already linked to another user")
 	ErrPasskeyAlreadyLinked    = errors.New("passkey is already linked to a user")
