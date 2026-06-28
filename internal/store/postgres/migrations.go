@@ -265,6 +265,34 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_preview_storage_key TEXT NOT N
 ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_master_storage_key TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		Name: "016_email_otp_challenges",
+		Up: `
+CREATE TABLE IF NOT EXISTS email_otp_challenges (
+    id          UUID PRIMARY KEY,
+    email       TEXT NOT NULL,
+    code_hash   VARCHAR(64) NOT NULL,
+    intent      VARCHAR(20) NOT NULL CHECK (intent IN ('login', 'link')),
+    user_id     UUID REFERENCES users(id),
+    status      VARCHAR(20) NOT NULL DEFAULT 'pending'
+                CHECK (status IN ('pending', 'consumed', 'expired')),
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at  TIMESTAMPTZ NOT NULL,
+    consumed_at TIMESTAMPTZ,
+    user_agent  TEXT NOT NULL DEFAULT '',
+    ip_address  TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_email_otp_challenges_pending_id
+    ON email_otp_challenges (id) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_email_otp_challenges_pending_email
+    ON email_otp_challenges (email, created_at DESC) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_email_otp_challenges_pending_ip
+    ON email_otp_challenges (ip_address) WHERE status = 'pending';
+CREATE INDEX IF NOT EXISTS idx_email_otp_challenges_expires
+    ON email_otp_challenges (expires_at) WHERE status = 'pending';
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

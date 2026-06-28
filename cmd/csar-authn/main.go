@@ -30,6 +30,7 @@ import (
 
 	"github.com/ledatu/csar-authn/internal/avatar"
 	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/emailotp"
 	"github.com/ledatu/csar-authn/internal/handler"
 	"github.com/ledatu/csar-authn/internal/oauth"
 	"github.com/ledatu/csar-authn/internal/passkey"
@@ -167,6 +168,15 @@ func run(
 		}
 	}
 
+	var emailOTPSender emailotp.Sender
+	if cfg.EmailOTP != nil && cfg.EmailOTP.Enabled {
+		emailOTPSender, err = emailotp.NewPostboxSender(*cfg.EmailOTP, nil)
+		if err != nil {
+			return fmt.Errorf("initializing email OTP sender: %w", err)
+		}
+		logger.Info("email OTP sender initialized", "endpoint", cfg.EmailOTP.Postbox.Endpoint)
+	}
+
 	var stsHandler *sts.Handler
 	if cfg.STS.Enabled {
 		stsHandler, err = initSTS(ctx, cfg, st, sessionMgr, logger)
@@ -220,7 +230,7 @@ func run(
 
 	// --- Routes ---
 	mux := http.NewServeMux()
-	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, passkeySvc, stsHandler, authzClient, avatarClient, auditRecorder, logger, cfg)
+	h := handler.New(st, sessionMgr, sessMgr, oauthMgr, passkeySvc, emailOTPSender, stsHandler, authzClient, avatarClient, auditRecorder, logger, cfg)
 	h.RegisterRoutes(mux)
 
 	// Health and readiness endpoints.
@@ -272,6 +282,27 @@ func run(
 						logger.Error("bot verification cleanup failed", "error", err)
 					} else if n > 0 {
 						logger.Info("bot verification cleanup", "expired", n)
+					}
+				case <-ctx.Done():
+					return
+				}
+			}
+		}()
+	}
+
+	// --- Email OTP cleanup ---
+	if cfg.EmailOTP != nil && cfg.EmailOTP.Enabled {
+		go func() {
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ticker.C:
+					n, err := st.CleanExpiredEmailOTPChallenges(ctx)
+					if err != nil {
+						logger.Error("email OTP cleanup failed", "error", err)
+					} else if n > 0 {
+						logger.Info("email OTP cleanup", "expired", n)
 					}
 				case <-ctx.Done():
 					return

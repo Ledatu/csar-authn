@@ -25,6 +25,9 @@ var (
 	ErrSelfMerge               = errors.New("cannot merge a user into itself")
 	ErrLoginHandoffUnavailable = errors.New("login handoff is unavailable")
 	ErrAttributionUnavailable  = errors.New("attribution touch is unavailable")
+	ErrEmailOTPUnavailable     = errors.New("email OTP challenge is unavailable")
+	ErrEmailOTPInvalidCode     = errors.New("email OTP code is invalid")
+	ErrEmailOTPTooManyAttempts = errors.New("email OTP challenge exceeded maximum attempts")
 )
 
 // FindOrCreateResult indicates the outcome of FindOrCreateUser.
@@ -138,6 +141,22 @@ type BotVerification struct {
 	ConsumedAt      *time.Time
 	UserAgent       string
 	IPAddress       string
+}
+
+// EmailOTPChallenge tracks a short-lived email one-time-code challenge.
+type EmailOTPChallenge struct {
+	ID         uuid.UUID
+	Email      string
+	CodeHash   string
+	Intent     string     // "login" or "link"
+	UserID     *uuid.UUID // non-nil when intent=link
+	Status     string     // pending, consumed, expired
+	Attempts   int
+	CreatedAt  time.Time
+	ExpiresAt  time.Time
+	ConsumedAt *time.Time
+	UserAgent  string
+	IPAddress  string
 }
 
 // LoginHandoff tracks a short-lived QR device handoff request.
@@ -420,6 +439,26 @@ type Store interface {
 
 	// CountPendingBotVerifications counts active pending verifications by IP address.
 	CountPendingBotVerifications(ctx context.Context, ipAddress string) (int, error)
+
+	// --- Email OTP ---
+
+	// CreateEmailOTPChallenge inserts a new pending email OTP challenge.
+	CreateEmailOTPChallenge(ctx context.Context, challenge *EmailOTPChallenge) error
+
+	// VerifyEmailOTPChallenge atomically validates and consumes a pending email OTP challenge.
+	VerifyEmailOTPChallenge(ctx context.Context, id uuid.UUID, codeHash string, maxAttempts int) (*EmailOTPChallenge, error)
+
+	// CountPendingEmailOTPChallengesByIP counts active pending email OTP challenges by IP address.
+	CountPendingEmailOTPChallengesByIP(ctx context.Context, ipAddress string) (int, error)
+
+	// CountPendingEmailOTPChallengesByEmail counts active pending email OTP challenges by normalized email.
+	CountPendingEmailOTPChallengesByEmail(ctx context.Context, email string) (int, error)
+
+	// GetLatestEmailOTPChallengeByEmail returns the newest challenge for cooldown checks.
+	GetLatestEmailOTPChallengeByEmail(ctx context.Context, email string) (*EmailOTPChallenge, error)
+
+	// CleanExpiredEmailOTPChallenges marks active rows past expires_at as expired.
+	CleanExpiredEmailOTPChallenges(ctx context.Context) (int64, error)
 
 	// --- QR Login Handoff ---
 

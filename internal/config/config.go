@@ -28,6 +28,8 @@ type (
 	SessionConfig           = authnconfig.SessionConfig
 	QRLoginConfig           = authnconfig.QRLoginConfig
 	RedisConfig             = authnconfig.RedisConfig
+	EmailOTPConfig          = authnconfig.EmailOTPConfig
+	PostboxConfig           = authnconfig.PostboxConfig
 	LegacyLoginConfig       = authnconfig.LegacyLoginConfig
 	LegacyTelegramJWTConfig = authnconfig.LegacyTelegramJWTConfig
 	Duration                = authnconfig.Duration

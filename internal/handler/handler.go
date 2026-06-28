@@ -14,6 +14,7 @@ import (
 
 	"github.com/ledatu/csar-authn/internal/botverify"
 	"github.com/ledatu/csar-authn/internal/config"
+	"github.com/ledatu/csar-authn/internal/emailotp"
 	"github.com/ledatu/csar-authn/internal/oauth"
 	"github.com/ledatu/csar-authn/internal/passkey"
 	"github.com/ledatu/csar-authn/internal/session"
@@ -25,33 +26,35 @@ import (
 // cfg is stored behind an atomic pointer so config changes are visible to
 // request handlers without restarting the service.
 type Handler struct {
-	store         store.Store
-	sessionMgr    *session.Manager
-	sessMgr       *session.SessionManager
-	oauthMgr      *oauth.Manager
-	passkeySvc    *passkey.Service
-	stsHandler    *sts.Handler   // nil when STS is not configured
-	authzClient   *AuthzClient   // nil when authz is not configured
-	avatarClient  avatarService  // nil when avatar storage is not configured
-	auditRecorder audit.Recorder // nil when audit is not configured
-	logger        *slog.Logger
-	cfg           atomic.Pointer[config.Config]
+	store          store.Store
+	sessionMgr     *session.Manager
+	sessMgr        *session.SessionManager
+	oauthMgr       *oauth.Manager
+	passkeySvc     *passkey.Service
+	emailOTPSender emailotp.Sender
+	stsHandler     *sts.Handler   // nil when STS is not configured
+	authzClient    *AuthzClient   // nil when authz is not configured
+	avatarClient   avatarService  // nil when avatar storage is not configured
+	auditRecorder  audit.Recorder // nil when audit is not configured
+	logger         *slog.Logger
+	cfg            atomic.Pointer[config.Config]
 }
 
 // New creates a Handler with all dependencies.
 // stsHandler, authzClient, and auditRecorder may be nil when their features are not enabled.
-func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient avatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
+func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, emailOTPSender emailotp.Sender, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient avatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
 	h := &Handler{
-		store:         st,
-		sessionMgr:    sessionMgr,
-		sessMgr:       sessMgr,
-		oauthMgr:      oauthMgr,
-		passkeySvc:    passkeySvc,
-		stsHandler:    stsHandler,
-		authzClient:   authzClient,
-		avatarClient:  avatarClient,
-		auditRecorder: auditRecorder,
-		logger:        logger,
+		store:          st,
+		sessionMgr:     sessionMgr,
+		sessMgr:        sessMgr,
+		oauthMgr:       oauthMgr,
+		passkeySvc:     passkeySvc,
+		emailOTPSender: emailOTPSender,
+		stsHandler:     stsHandler,
+		authzClient:    authzClient,
+		avatarClient:   avatarClient,
+		auditRecorder:  auditRecorder,
+		logger:         logger,
 	}
 	h.cfg.Store(cfg)
 	return h
@@ -160,6 +163,13 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /auth/bot-verify/status/{id}", bv.HandleStatus)
 		mux.HandleFunc("POST /auth/bot-verify/finalize/{id}", bv.HandleFinalize)
 		mux.HandleFunc("POST /svc/authn/bot-verify/confirm", bv.HandleConfirm)
+	}
+
+	// Email OTP endpoints (optional).
+	if cfg.EmailOTP != nil && cfg.EmailOTP.Enabled && h.emailOTPSender != nil {
+		eo := emailotp.NewHandler(h.store, h.sessMgr, h.emailOTPSender, cfg, h.logger)
+		mux.HandleFunc("POST /auth/email-otp/start", eo.HandleStart)
+		mux.HandleFunc("POST /auth/email-otp/verify", eo.HandleVerify)
 	}
 
 	// Permissions endpoints (optional, requires authz service).

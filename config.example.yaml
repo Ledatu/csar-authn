@@ -102,6 +102,27 @@ qr_login:
   max_pending_per_ip: 3
   cleanup_interval: "5m"
 
+# --- Email OTP via Yandex Cloud Postbox (optional) ---
+# Enables first-party login/link by email. The sender address must be verified
+# in Yandex Cloud Postbox, and the service account must have postbox.sender.
+#
+# email_otp:
+#   enabled: true
+#   code_ttl: "5m"
+#   max_pending_per_ip: 3
+#   max_pending_per_email: 3
+#   max_attempts: 5
+#   cooldown: "1m"
+#   sender_address: "${EMAIL_OTP_FROM_ADDRESS}"
+#   sender_name: "CSAR Auth"
+#   subject: "Your CSAR sign-in code"
+#   postbox:
+#     endpoint: "${YANDEX_POSTBOX_ENDPOINT:-https://postbox.cloud.yandex.net}"
+#     region: "${YANDEX_POSTBOX_REGION:-ru-central1}"
+#     auth:
+#       auth_mode: "service_account"
+#       sa_key_file: "${YANDEX_POSTBOX_SA_KEY_FILE}"
+
 # --- Redis (optional) ---
 # When configured, used for STS replay protection (preferred over Postgres).
 # Falls back to Postgres or in-memory if not set.

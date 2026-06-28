@@ -27,6 +27,7 @@ type Store struct {
 	sessions           map[string]*store.Session        // key: session ID
 	mergeRecords       map[string]*store.MergeRecord    // key: token_hash
 	botVerifications   map[uuid.UUID]*store.BotVerification
+	emailOTPChallenges map[uuid.UUID]*store.EmailOTPChallenge
 	loginHandoffs      map[uuid.UUID]*store.LoginHandoff
 }
 
@@ -39,6 +40,7 @@ func New() *Store {
 		passkeys:           make(map[uuid.UUID]*store.Passkey),
 		passkeyChallenges:  make(map[uuid.UUID]*store.PasskeyChallenge),
 		serviceAccounts:    make(map[string]*store.ServiceAccount),
+		emailOTPChallenges: make(map[uuid.UUID]*store.EmailOTPChallenge),
 		loginHandoffs:      make(map[uuid.UUID]*store.LoginHandoff),
 	}
 }
@@ -1085,6 +1087,108 @@ func (s *Store) CountPendingBotVerifications(_ context.Context, ipAddress string
 	n := 0
 	for _, v := range s.botVerifications {
 		if v.IPAddress == ipAddress && v.Status == "pending" && now.Before(v.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) CreateEmailOTPChallenge(_ context.Context, challenge *store.EmailOTPChallenge) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.emailOTPChallenges == nil {
+		s.emailOTPChallenges = make(map[uuid.UUID]*store.EmailOTPChallenge)
+	}
+	cp := *challenge
+	s.emailOTPChallenges[challenge.ID] = &cp
+	return nil
+}
+
+func (s *Store) VerifyEmailOTPChallenge(_ context.Context, id uuid.UUID, codeHash string, maxAttempts int) (*store.EmailOTPChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	challenge, ok := s.emailOTPChallenges[id]
+	if !ok {
+		return nil, store.ErrEmailOTPUnavailable
+	}
+	now := time.Now()
+	if challenge.Status != "pending" || !now.Before(challenge.ExpiresAt) {
+		if challenge.Status == "pending" {
+			challenge.Status = "expired"
+		}
+		return nil, store.ErrEmailOTPUnavailable
+	}
+	if challenge.Attempts >= maxAttempts {
+		return nil, store.ErrEmailOTPTooManyAttempts
+	}
+	if challenge.CodeHash != codeHash {
+		challenge.Attempts++
+		if challenge.Attempts >= maxAttempts {
+			challenge.Status = "expired"
+			return nil, store.ErrEmailOTPTooManyAttempts
+		}
+		return nil, store.ErrEmailOTPInvalidCode
+	}
+	challenge.Attempts++
+	challenge.Status = "consumed"
+	challenge.ConsumedAt = &now
+	cp := *challenge
+	return &cp, nil
+}
+
+func (s *Store) CountPendingEmailOTPChallengesByIP(_ context.Context, ipAddress string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, challenge := range s.emailOTPChallenges {
+		if challenge.IPAddress == ipAddress && challenge.Status == "pending" && now.Before(challenge.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) CountPendingEmailOTPChallengesByEmail(_ context.Context, email string) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	n := 0
+	for _, challenge := range s.emailOTPChallenges {
+		if challenge.Email == email && challenge.Status == "pending" && now.Before(challenge.ExpiresAt) {
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (s *Store) GetLatestEmailOTPChallengeByEmail(_ context.Context, email string) (*store.EmailOTPChallenge, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var latest *store.EmailOTPChallenge
+	for _, challenge := range s.emailOTPChallenges {
+		if challenge.Email != email {
+			continue
+		}
+		if latest == nil || challenge.CreatedAt.After(latest.CreatedAt) {
+			latest = challenge
+		}
+	}
+	if latest == nil {
+		return nil, store.ErrNotFound
+	}
+	cp := *latest
+	return &cp, nil
+}
+
+func (s *Store) CleanExpiredEmailOTPChallenges(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var n int64
+	for _, challenge := range s.emailOTPChallenges {
+		if challenge.Status == "pending" && !now.Before(challenge.ExpiresAt) {
+			challenge.Status = "expired"
 			n++
 		}
 	}
