@@ -82,6 +82,21 @@ session:
   touch_threshold: "1m"
   cleanup_interval: "1h"
 
+# --- Temporary legacy Telegram JWT login (migration only) ---
+# Enables POST /auth/legacy/telegram/session to exchange old HS256 tokens like:
+#   {"id": 416663223, "username": "diagen_001", "iat": 1759347122}
+# for a normal server-side csar_session cookie. The `id` claim is resolved as
+# oauth_accounts(provider="telegram", provider_user_id="<id>"). Tokens without
+# exp are accepted and bounded by max_token_age from iat.
+# Remove this block and the router route after the legacy portal cutover.
+#
+# legacy_login:
+#   telegram_jwt:
+#     enabled: true
+#     hmac_secret: "${LEGACY_TELEGRAM_JWT_SECRET}"
+#     max_token_age: "720h"
+#     endpoint_enabled_until: "2026-08-01T00:00:00Z"
+
 qr_login:
   ttl: "2m"
   max_pending_per_ip: 3

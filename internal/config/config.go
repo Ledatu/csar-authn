@@ -15,20 +15,22 @@ import (
 
 // Re-export all types as aliases so callers keep using config.XYZ.
 type (
-	Config         = authnconfig.Config
-	AuthzConfig    = authnconfig.AuthzConfig
-	AuthzTLSConfig = authnconfig.AuthzTLSConfig
-	STSConfig      = authnconfig.STSConfig
-	DatabaseConfig = authnconfig.DatabaseConfig
-	JWTConfig      = authnconfig.JWTConfig
-	OAuthConfig    = authnconfig.OAuthConfig
-	PasskeyConfig  = authnconfig.PasskeyConfig
-	ProviderConfig = authnconfig.ProviderConfig
-	CookieConfig   = authnconfig.CookieConfig
-	SessionConfig  = authnconfig.SessionConfig
-	QRLoginConfig  = authnconfig.QRLoginConfig
-	RedisConfig    = authnconfig.RedisConfig
-	Duration       = authnconfig.Duration
+	Config                  = authnconfig.Config
+	AuthzConfig             = authnconfig.AuthzConfig
+	AuthzTLSConfig          = authnconfig.AuthzTLSConfig
+	STSConfig               = authnconfig.STSConfig
+	DatabaseConfig          = authnconfig.DatabaseConfig
+	JWTConfig               = authnconfig.JWTConfig
+	OAuthConfig             = authnconfig.OAuthConfig
+	PasskeyConfig           = authnconfig.PasskeyConfig
+	ProviderConfig          = authnconfig.ProviderConfig
+	CookieConfig            = authnconfig.CookieConfig
+	SessionConfig           = authnconfig.SessionConfig
+	QRLoginConfig           = authnconfig.QRLoginConfig
+	RedisConfig             = authnconfig.RedisConfig
+	LegacyLoginConfig       = authnconfig.LegacyLoginConfig
+	LegacyTelegramJWTConfig = authnconfig.LegacyTelegramJWTConfig
+	Duration                = authnconfig.Duration
 )
 
 // NewDuration re-exports authnconfig.NewDuration.

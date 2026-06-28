@@ -103,6 +103,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/attribution/capture", h.handleCaptureAttribution)
 	mux.HandleFunc("GET /auth/attribution/current", h.handleCurrentAttribution)
 
+	// Temporary migration bridge: exchanges legacy Telegram JWTs for normal sessions.
+	mux.HandleFunc("POST /auth/legacy/telegram/session", h.handleLegacyTelegramSession)
+
 	// Current user info: GET /auth/me
 	mux.HandleFunc("GET /auth/me", h.handleMe)
 	mux.HandleFunc("PATCH /auth/me/profile", h.handleUpdateProfile)
