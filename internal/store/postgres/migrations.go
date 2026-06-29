@@ -293,6 +293,30 @@ CREATE INDEX IF NOT EXISTS idx_email_otp_challenges_expires
     ON email_otp_challenges (expires_at) WHERE status = 'pending';
 `,
 	},
+	{
+		Name: "017_email_canonical",
+		Up: `
+UPDATE users
+   SET email = lower(trim(email))
+ WHERE email IS NOT NULL
+   AND email <> '';
+
+UPDATE oauth_accounts
+   SET email = lower(trim(email))
+ WHERE email <> '';
+
+UPDATE oauth_accounts
+   SET provider_user_id = lower(trim(provider_user_id))
+ WHERE provider = 'email';
+
+UPDATE email_otp_challenges
+   SET email = lower(trim(email));
+
+ALTER TABLE oauth_accounts
+  ADD CONSTRAINT chk_oauth_email_provider_user_id_lower
+  CHECK (provider <> 'email' OR provider_user_id = lower(provider_user_id));
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

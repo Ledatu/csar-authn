@@ -46,6 +46,9 @@ func New() *Store {
 }
 
 func oauthKey(provider, providerUserID string) string {
+	if provider == store.EmailProvider {
+		providerUserID = strings.ToLower(providerUserID)
+	}
 	return provider + "|" + providerUserID
 }
 
@@ -85,6 +88,12 @@ func (s *Store) GetUserByPhone(_ context.Context, phone string) (*store.User, er
 }
 
 func (s *Store) CreateUser(_ context.Context, u *store.User) (*store.User, error) {
+	email, err := store.CanonicalizeUserEmail(u.Email)
+	if err != nil {
+		return nil, err
+	}
+	u.Email = email
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if u.ID == uuid.Nil {
@@ -154,6 +163,15 @@ func (s *Store) GetOAuthAccount(_ context.Context, provider, providerUserID stri
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	a, ok := s.accounts[oauthKey(provider, providerUserID)]
+	if !ok && provider == store.EmailProvider {
+		for _, acct := range s.accounts {
+			if acct.Provider == provider && strings.EqualFold(acct.ProviderUserID, providerUserID) {
+				a = acct
+				ok = true
+				break
+			}
+		}
+	}
 	if !ok {
 		return nil, store.ErrNotFound
 	}
@@ -174,6 +192,10 @@ func (s *Store) GetOAuthAccountsByUserID(_ context.Context, userID uuid.UUID) ([
 }
 
 func (s *Store) CreateOAuthAccount(_ context.Context, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := oauthKey(acct.Provider, acct.ProviderUserID)
@@ -189,6 +211,10 @@ func (s *Store) CreateOAuthAccount(_ context.Context, acct *store.OAuthAccount) 
 }
 
 func (s *Store) UpdateOAuthAccount(_ context.Context, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	key := oauthKey(acct.Provider, acct.ProviderUserID)
@@ -233,6 +259,15 @@ func (s *Store) DeleteOAuthAccount(_ context.Context, provider string, userID uu
 //  3. Verified phone match (even if unverified email conflicts)
 //  4. Create new user
 func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, phone, displayName, avatarURL string) (*store.User, store.FindOrCreateResult, error) {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return nil, 0, err
+	}
+	canonicalEmail, err := store.CanonicalizeUserEmail(email)
+	if err != nil {
+		return nil, 0, err
+	}
+	email = canonicalEmail
+
 	// Step 1: existing oauth link.
 	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
 	if err == nil {
@@ -298,6 +333,10 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 }
 
 func (s *Store) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return err
+	}
+
 	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
 	if err == nil {
 		if existing.UserID == userID {
@@ -1094,6 +1133,12 @@ func (s *Store) CountPendingBotVerifications(_ context.Context, ipAddress string
 }
 
 func (s *Store) CreateEmailOTPChallenge(_ context.Context, challenge *store.EmailOTPChallenge) error {
+	email, err := store.CanonicalizeUserEmail(challenge.Email)
+	if err != nil {
+		return err
+	}
+	challenge.Email = email
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.emailOTPChallenges == nil {
@@ -1155,7 +1200,7 @@ func (s *Store) CountPendingEmailOTPChallengesByEmail(_ context.Context, email s
 	now := time.Now()
 	n := 0
 	for _, challenge := range s.emailOTPChallenges {
-		if challenge.Email == email && challenge.Status == "pending" && now.Before(challenge.ExpiresAt) {
+		if strings.EqualFold(challenge.Email, email) && challenge.Status == "pending" && now.Before(challenge.ExpiresAt) {
 			n++
 		}
 	}
@@ -1167,7 +1212,7 @@ func (s *Store) GetLatestEmailOTPChallengeByEmail(_ context.Context, email strin
 	defer s.mu.Unlock()
 	var latest *store.EmailOTPChallenge
 	for _, challenge := range s.emailOTPChallenges {
-		if challenge.Email != email {
+		if !strings.EqualFold(challenge.Email, email) {
 			continue
 		}
 		if latest == nil || challenge.CreatedAt.After(latest.CreatedAt) {
@@ -1354,6 +1399,9 @@ func (s *Store) SeedUser(u *store.User) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	cp := *u
+	if email, err := store.CanonicalizeUserEmail(cp.Email); err == nil {
+		cp.Email = email
+	}
 	s.users[u.ID] = &cp
 }
 

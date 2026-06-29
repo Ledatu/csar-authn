@@ -102,11 +102,23 @@ func CallbackHandler(
 		)
 
 		emailVerified := ExtractEmailVerified(gothUser, oauthMgr.IsTrusted(provider))
+		normalizedEmail := ""
+		if gothUser.Email != "" {
+			var normalizeErr error
+			normalizedEmail, normalizeErr = store.NormalizeEmailString(gothUser.Email)
+			if normalizeErr != nil {
+				logger.Warn("oauth provider returned invalid email",
+					"provider", provider,
+					"email", gothUser.Email,
+					"error", normalizeErr,
+				)
+			}
+		}
 
 		acct := &store.OAuthAccount{
 			Provider:       gothUser.Provider,
 			ProviderUserID: gothUser.UserID,
-			Email:          gothUser.Email,
+			Email:          normalizedEmail,
 			DisplayName:    gothUser.Name,
 			AvatarURL:      gothUser.AvatarURL,
 			AccessToken:    gothUser.AccessToken,
@@ -155,7 +167,7 @@ func CallbackHandler(
 			return
 		}
 
-		handleLoginCallback(w, r, st, sessMgr, oauthMgr, cookieName, cookieDomain, cookieSecure, cookieSameSite, acct, gothUser.Email, phone, gothUser.Name, gothUser.AvatarURL, provider, logger)
+		handleLoginCallback(w, r, st, sessMgr, oauthMgr, cookieName, cookieDomain, cookieSecure, cookieSameSite, acct, normalizedEmail, phone, gothUser.Name, gothUser.AvatarURL, provider, logger)
 	})
 }
 

@@ -5,11 +5,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
-	"net/mail"
 	"strings"
 	"time"
 
@@ -23,7 +21,7 @@ import (
 )
 
 const (
-	providerEmail = "email"
+	providerEmail = store.EmailProvider
 	otpLength     = 6
 )
 
@@ -57,7 +55,7 @@ func (h *Handler) HandleStart(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, err)
 		return
 	}
-	email, err := normalizeEmail(req.Email)
+	email, err := store.NormalizeEmailString(req.Email)
 	if err != nil {
 		http.Error(w, "invalid email", http.StatusBadRequest)
 		return
@@ -356,18 +354,6 @@ func generateCode() (string, error) {
 func hashCode(code string) string {
 	h := sha256.Sum256([]byte(strings.ToUpper(strings.TrimSpace(code))))
 	return hex.EncodeToString(h[:])
-}
-
-func normalizeEmail(value string) (string, error) {
-	addr, err := mail.ParseAddress(strings.TrimSpace(value))
-	if err != nil {
-		return "", err
-	}
-	email := strings.ToLower(strings.TrimSpace(addr.Address))
-	if email == "" || !strings.Contains(email, "@") {
-		return "", fmt.Errorf("invalid email")
-	}
-	return email, nil
 }
 
 func requestIPAddress(r *http.Request) string {

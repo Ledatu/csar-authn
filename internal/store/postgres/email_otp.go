@@ -15,7 +15,13 @@ import (
 )
 
 func (s *Store) CreateEmailOTPChallenge(ctx context.Context, challenge *store.EmailOTPChallenge) error {
-	_, err := s.pool.Exec(ctx,
+	email, err := store.CanonicalizeUserEmail(challenge.Email)
+	if err != nil {
+		return fmt.Errorf("canonicalizing email OTP challenge email: %w", err)
+	}
+	challenge.Email = email
+
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO email_otp_challenges
 		 (id, email, code_hash, intent, user_id, status, attempts, created_at, expires_at, user_agent, ip_address)
 		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
@@ -147,7 +153,19 @@ func (s *Store) CountPendingEmailOTPChallengesByIP(ctx context.Context, ipAddres
 }
 
 func (s *Store) CountPendingEmailOTPChallengesByEmail(ctx context.Context, email string) (int, error) {
-	return s.countPendingEmailOTPChallenges(ctx, "email", email)
+	var count int
+	err := s.pool.QueryRow(ctx,
+		`SELECT COUNT(*)
+		   FROM email_otp_challenges
+		  WHERE lower(email) = lower($1)
+		    AND status = 'pending'
+		    AND expires_at > now()`,
+		email,
+	).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("counting pending email OTP challenges by email: %w", err)
+	}
+	return count, nil
 }
 
 func (s *Store) countPendingEmailOTPChallenges(ctx context.Context, column, value string) (int, error) {
@@ -168,7 +186,7 @@ func (s *Store) GetLatestEmailOTPChallengeByEmail(ctx context.Context, email str
 		`SELECT id, email, code_hash, intent, user_id, status, attempts,
 		        created_at, expires_at, consumed_at, user_agent, ip_address
 		   FROM email_otp_challenges
-		  WHERE email = $1
+		  WHERE lower(email) = lower($1)
 		  ORDER BY created_at DESC
 		  LIMIT 1`,
 		email,

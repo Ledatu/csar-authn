@@ -187,6 +187,61 @@ func TestFindOrCreateUser_Idempotent(t *testing.T) {
 	}
 }
 
+func TestFindOrCreateUser_CanonicalizesEmail(t *testing.T) {
+	s := mock.New()
+	acct := &store.OAuthAccount{
+		Provider:       "google",
+		ProviderUserID: "g-mixed",
+		Email:          "Mixed@Example.COM",
+		EmailVerified:  true,
+	}
+
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "Mixed@Example.COM", "", "Mixed", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result != store.ResultCreatedNewUser {
+		t.Fatalf("expected ResultCreatedNewUser, got %d", result)
+	}
+	if user.Email != "mixed@example.com" {
+		t.Fatalf("user.Email = %q, want mixed@example.com", user.Email)
+	}
+	got, err := s.GetOAuthAccount(context.Background(), "google", "g-mixed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "mixed@example.com" {
+		t.Fatalf("oauth email = %q, want mixed@example.com", got.Email)
+	}
+}
+
+func TestGetOAuthAccount_EmailProviderCaseInsensitive(t *testing.T) {
+	s := mock.New()
+	user := &store.User{ID: uuid.New(), Email: "case@example.com"}
+	s.SeedUser(user)
+
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       store.EmailProvider,
+		ProviderUserID: "Case@Example.COM",
+		UserID:         user.ID,
+		Email:          "Case@Example.COM",
+		EmailVerified:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.GetOAuthAccount(context.Background(), store.EmailProvider, "case@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProviderUserID != "case@example.com" {
+		t.Fatalf("ProviderUserID = %q, want case@example.com", got.ProviderUserID)
+	}
+	if got.Email != "case@example.com" {
+		t.Fatalf("Email = %q, want case@example.com", got.Email)
+	}
+}
+
 func TestLinkOAuthAccount(t *testing.T) {
 	s := mock.New()
 	user := &store.User{ID: uuid.New(), Email: "frank@example.com"}

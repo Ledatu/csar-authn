@@ -123,11 +123,16 @@ func (s *Store) CreateUser(ctx context.Context, u *store.User) (*store.User, err
 	if u.ID == uuid.Nil {
 		u.ID = uuid.New()
 	}
+	email, err := store.CanonicalizeUserEmail(u.Email)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalizing user email: %w", err)
+	}
+	u.Email = email
 	now := time.Now()
 	u.CreatedAt = now
 	u.UpdatedAt = now
 
-	_, err := s.pool.Exec(ctx,
+	_, err = s.pool.Exec(ctx,
 		`INSERT INTO users (
 		     id, email, phone, display_name, avatar_storage_key, avatar_preview_storage_key, avatar_master_storage_key,
 		     avatar_url, created_at, updated_at
@@ -200,11 +205,15 @@ func (s *Store) SetUserPhoneIfEmpty(ctx context.Context, userID uuid.UUID, phone
 
 func (s *Store) GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*store.OAuthAccount, error) {
 	a := &store.OAuthAccount{}
+	whereClause := `provider = $1 AND provider_user_id = $2`
+	if provider == store.EmailProvider {
+		whereClause = `provider = $1 AND lower(provider_user_id) = lower($2)`
+	}
 	err := s.pool.QueryRow(ctx,
 		`SELECT provider, provider_user_id, user_id, email, display_name, avatar_url,
 		        access_token, refresh_token, expires_at, email_verified, linked_at, updated_at,
 		        provider_metadata
-		 FROM oauth_accounts WHERE provider = $1 AND provider_user_id = $2`,
+		 FROM oauth_accounts WHERE `+whereClause,
 		provider, providerUserID,
 	).Scan(&a.Provider, &a.ProviderUserID, &a.UserID, &a.Email, &a.DisplayName, &a.AvatarURL,
 		&a.AccessToken, &a.RefreshToken, &a.ExpiresAt, &a.EmailVerified, &a.LinkedAt, &a.UpdatedAt,
@@ -244,6 +253,9 @@ func (s *Store) GetOAuthAccountsByUserID(ctx context.Context, userID uuid.UUID) 
 }
 
 func (s *Store) CreateOAuthAccount(ctx context.Context, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return fmt.Errorf("canonicalizing oauth account: %w", err)
+	}
 	now := time.Now()
 	acct.LinkedAt = now
 	acct.UpdatedAt = now
@@ -265,14 +277,22 @@ func (s *Store) CreateOAuthAccount(ctx context.Context, acct *store.OAuthAccount
 }
 
 func (s *Store) UpdateOAuthAccount(ctx context.Context, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return fmt.Errorf("canonicalizing oauth account: %w", err)
+	}
 	acct.UpdatedAt = time.Now()
+	whereClause := `provider = $1 AND provider_user_id = $2`
+	if acct.Provider == store.EmailProvider {
+		whereClause = `provider = $1 AND lower(provider_user_id) = lower($2)`
+	}
 	_, err := s.pool.Exec(ctx,
 		`UPDATE oauth_accounts
-		 SET email = $3, display_name = $4, avatar_url = $5,
+		 SET provider_user_id = $2,
+		     email = $3, display_name = $4, avatar_url = $5,
 		     access_token = $6, refresh_token = $7, expires_at = $8,
 		     email_verified = $9, updated_at = $10,
 		     provider_metadata = COALESCE($11, provider_metadata)
-		 WHERE provider = $1 AND provider_user_id = $2`,
+		 WHERE `+whereClause,
 		acct.Provider, acct.ProviderUserID,
 		acct.Email, acct.DisplayName, acct.AvatarURL,
 		acct.AccessToken, acct.RefreshToken, acct.ExpiresAt,
@@ -335,6 +355,15 @@ func (s *Store) DeleteOAuthAccount(ctx context.Context, provider string, userID 
 // requires the email to be verified. Phone matches auto-link unconditionally
 // (Telegram always verifies phone numbers).
 func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, phone, displayName, avatarURL string) (*store.User, store.FindOrCreateResult, error) {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return nil, 0, fmt.Errorf("canonicalizing oauth account: %w", err)
+	}
+	canonicalEmail, err := store.CanonicalizeUserEmail(email)
+	if err != nil {
+		return nil, 0, fmt.Errorf("canonicalizing user email: %w", err)
+	}
+	email = canonicalEmail
+
 	// Step 1: Check if this oauth account is already linked.
 	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
 	if err == nil {
@@ -469,6 +498,9 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 
 // insertOAuthAccountTx inserts an oauth_account row within a transaction.
 func (s *Store) insertOAuthAccountTx(ctx context.Context, tx pgx.Tx, acct *store.OAuthAccount, userID uuid.UUID) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return fmt.Errorf("canonicalizing oauth account: %w", err)
+	}
 	now := time.Now()
 	_, err := tx.Exec(ctx,
 		`INSERT INTO oauth_accounts
@@ -489,6 +521,9 @@ func (s *Store) insertOAuthAccountTx(ctx context.Context, tx pgx.Tx, acct *store
 // LinkOAuthAccount links an OAuth identity to an authenticated user.
 // Returns ErrProviderAlreadyLinked if the provider account is linked to a different user.
 func (s *Store) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *store.OAuthAccount) error {
+	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
+		return fmt.Errorf("canonicalizing oauth account: %w", err)
+	}
 	// Check if this provider account is already linked to someone.
 	existing, err := s.GetOAuthAccount(ctx, acct.Provider, acct.ProviderUserID)
 	if err == nil {
