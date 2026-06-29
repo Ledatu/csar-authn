@@ -117,6 +117,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/me/avatar", h.handleFinalizeAvatar)
 	mux.HandleFunc("POST /auth/me/avatar/finalize-set", h.handleFinalizeAvatarSet)
 	mux.HandleFunc("DELETE /auth/me/avatar", h.handleDeleteAvatar)
+	mux.HandleFunc("DELETE /auth/me/emails", h.handleDeleteMeEmail)
 
 	// Current user's active sessions: GET /auth/me/sessions
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)

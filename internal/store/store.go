@@ -277,6 +277,9 @@ type Store interface {
 	// DeleteOAuthAccount removes a linked account.
 	DeleteOAuthAccount(ctx context.Context, provider string, userID uuid.UUID) error
 
+	// DeleteEmailOAuthAccount removes exactly one verified email login identity.
+	DeleteEmailOAuthAccount(ctx context.Context, userID uuid.UUID, email string) error
+
 	// GetUserByPhone returns a user by phone number.
 	// Returns ErrNotFound if no user with that phone exists.
 	GetUserByPhone(ctx context.Context, phone string) (*User, error)

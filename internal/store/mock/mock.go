@@ -253,6 +253,54 @@ func (s *Store) DeleteOAuthAccount(_ context.Context, provider string, userID uu
 	return store.ErrNotFound
 }
 
+func (s *Store) DeleteEmailOAuthAccount(_ context.Context, userID uuid.UUID, email string) error {
+	email, err := store.NormalizeEmailString(email)
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	key := oauthKey(store.EmailProvider, email)
+	account, ok := s.accounts[key]
+	if !ok || account.UserID != userID {
+		return store.ErrNotFound
+	}
+
+	loginMethods := 0
+	for _, account := range s.accounts {
+		if account.UserID == userID {
+			loginMethods++
+		}
+	}
+	for _, passkey := range s.passkeys {
+		if passkey.UserID == userID {
+			loginMethods++
+		}
+	}
+	if loginMethods <= 1 {
+		return store.ErrLastLoginMethod
+	}
+
+	delete(s.accounts, key)
+
+	user, ok := s.users[userID]
+	if ok && strings.EqualFold(user.Email, email) {
+		nextEmail := ""
+		for _, account := range s.accounts {
+			if account.UserID == userID && account.Provider == store.EmailProvider {
+				nextEmail = account.ProviderUserID
+				break
+			}
+		}
+		user.Email = nextEmail
+		user.UpdatedAt = time.Now()
+	}
+
+	return nil
+}
+
 // FindOrCreateUser mirrors the production matching priority:
 //  1. Exact provider+providerUserID match
 //  2. Verified email match

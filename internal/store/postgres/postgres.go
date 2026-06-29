@@ -350,6 +350,110 @@ func (s *Store) DeleteOAuthAccount(ctx context.Context, provider string, userID 
 	return nil
 }
 
+func (s *Store) DeleteEmailOAuthAccount(ctx context.Context, userID uuid.UUID, email string) error {
+	email, err := store.NormalizeEmailString(email)
+	if err != nil {
+		return fmt.Errorf("canonicalizing email oauth account: %w", err)
+	}
+
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin delete email oauth account tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var accountUserID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT user_id
+		   FROM oauth_accounts
+		  WHERE provider = $1
+		    AND lower(provider_user_id) = lower($2)
+		  FOR UPDATE`,
+		store.EmailProvider,
+		email,
+	).Scan(&accountUserID); err != nil {
+		if pgutil.IsNotFound(err) {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("lock email oauth account: %w", err)
+	}
+	if accountUserID != userID {
+		return store.ErrNotFound
+	}
+
+	var primaryEmail string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(email, '') FROM users WHERE id = $1 FOR UPDATE`,
+		userID,
+	).Scan(&primaryEmail); err != nil {
+		if pgutil.IsNotFound(err) {
+			return store.ErrNotFound
+		}
+		return fmt.Errorf("lock user for email oauth delete: %w", err)
+	}
+
+	var loginMethodCount int
+	if err := tx.QueryRow(ctx,
+		`SELECT
+		   (SELECT COUNT(*) FROM oauth_accounts WHERE user_id = $1) +
+		   (SELECT COUNT(*) FROM passkeys WHERE user_id = $1)`,
+		userID,
+	).Scan(&loginMethodCount); err != nil {
+		return fmt.Errorf("count login methods before email oauth delete: %w", err)
+	}
+	if loginMethodCount <= 1 {
+		return store.ErrLastLoginMethod
+	}
+
+	tag, err := tx.Exec(ctx,
+		`DELETE FROM oauth_accounts
+		  WHERE provider = $1
+		    AND lower(provider_user_id) = lower($2)
+		    AND user_id = $3`,
+		store.EmailProvider,
+		email,
+		userID,
+	)
+	if err != nil {
+		return fmt.Errorf("delete email oauth account: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return store.ErrNotFound
+	}
+
+	if strings.EqualFold(primaryEmail, email) {
+		nextEmail := ""
+		err = tx.QueryRow(ctx,
+			`SELECT provider_user_id
+			   FROM oauth_accounts
+			  WHERE provider = $1
+			    AND user_id = $2
+			  ORDER BY linked_at
+			  LIMIT 1`,
+			store.EmailProvider,
+			userID,
+		).Scan(&nextEmail)
+		if err != nil && !pgutil.IsNotFound(err) {
+			return fmt.Errorf("select next primary email: %w", err)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE users
+			    SET email = NULLIF($2, ''),
+			        updated_at = now()
+			  WHERE id = $1`,
+			userID,
+			nextEmail,
+		); err != nil {
+			return fmt.Errorf("update primary email after delete: %w", err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit delete email oauth account tx: %w", err)
+	}
+	return nil
+}
+
 // FindOrCreateUser performs the lookup-or-create flow atomically.
 // It attempts to match by email first, then by phone. Auto-linking on email
 // requires the email to be verified. Phone matches auto-link unconditionally

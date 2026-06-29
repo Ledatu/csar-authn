@@ -242,6 +242,90 @@ func TestGetOAuthAccount_EmailProviderCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestDeleteEmailOAuthAccount_RemovesExactEmailAndMovesPrimary(t *testing.T) {
+	s := mock.New()
+	user := &store.User{ID: uuid.New(), Email: "primary@example.com"}
+	s.SeedUser(user)
+
+	for _, email := range []string{"primary@example.com", "backup@example.com"} {
+		if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+			Provider:       store.EmailProvider,
+			ProviderUserID: email,
+			UserID:         user.ID,
+			Email:          email,
+			EmailVerified:  true,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := s.DeleteEmailOAuthAccount(context.Background(), user.ID, "PRIMARY@EXAMPLE.COM"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.GetOAuthAccount(context.Background(), store.EmailProvider, "primary@example.com"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("primary email should be deleted, got %v", err)
+	}
+	if _, err := s.GetOAuthAccount(context.Background(), store.EmailProvider, "backup@example.com"); err != nil {
+		t.Fatalf("backup email should remain: %v", err)
+	}
+	got, err := s.GetUserByID(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Email != "backup@example.com" {
+		t.Fatalf("primary email = %q, want backup@example.com", got.Email)
+	}
+}
+
+func TestDeleteEmailOAuthAccount_RejectsLastLoginMethod(t *testing.T) {
+	s := mock.New()
+	user := &store.User{ID: uuid.New(), Email: "only@example.com"}
+	s.SeedUser(user)
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       store.EmailProvider,
+		ProviderUserID: "only@example.com",
+		UserID:         user.ID,
+		Email:          "only@example.com",
+		EmailVerified:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.DeleteEmailOAuthAccount(context.Background(), user.ID, "only@example.com")
+	if !errors.Is(err, store.ErrLastLoginMethod) {
+		t.Fatalf("expected ErrLastLoginMethod, got %v", err)
+	}
+}
+
+func TestDeleteEmailOAuthAccount_RejectsOtherUsersEmail(t *testing.T) {
+	s := mock.New()
+	userA := &store.User{ID: uuid.New(), Email: "a@example.com"}
+	userB := &store.User{ID: uuid.New(), Email: "b@example.com"}
+	s.SeedUser(userA)
+	s.SeedUser(userB)
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       store.EmailProvider,
+		ProviderUserID: "a@example.com",
+		UserID:         userA.ID,
+		Email:          "a@example.com",
+		EmailVerified:  true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateOAuthAccount(context.Background(), &store.OAuthAccount{
+		Provider:       "telegram",
+		ProviderUserID: "b-tg",
+		UserID:         userB.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := s.DeleteEmailOAuthAccount(context.Background(), userB.ID, "a@example.com")
+	if !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
 func TestLinkOAuthAccount(t *testing.T) {
 	s := mock.New()
 	user := &store.User{ID: uuid.New(), Email: "frank@example.com"}
