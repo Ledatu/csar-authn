@@ -135,6 +135,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Session validation for router subrequests: GET /auth/validate
 	mux.HandleFunc("GET /auth/validate", h.handleValidate)
+	mux.HandleFunc("POST /auth/validate", h.handleValidateWithTokens)
 
 	// Generic service-to-service attribution primitives.
 	mux.HandleFunc("POST /svc/authn/attribution/resolve", h.handleResolveServiceAttribution)
@@ -318,27 +319,8 @@ func (h *Handler) handleUnlinkProvider(w http.ResponseWriter, r *http.Request) {
 // Returns 200 with X-User-ID, X-User-Email, and X-Gateway-Subject headers, or 401.
 // Does NOT set cookies (response goes to the router, not the browser).
 func (h *Handler) handleValidate(w http.ResponseWriter, r *http.Request) {
-	cfg := h.cfg.Load()
-	cookie, err := r.Cookie(cfg.Cookie.Name)
-	if err != nil {
-		http.Error(w, "missing session", http.StatusUnauthorized)
-		return
-	}
-
-	sess, err := h.sessMgr.Validate(r.Context(), cookie.Value)
-	if err != nil {
-		http.Error(w, "session expired", http.StatusUnauthorized)
-		return
-	}
-
-	user, err := h.store.GetUserByID(r.Context(), sess.UserID)
-	if err != nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
-		return
-	}
-	user = h.followMerge(r, user)
-	if user == nil {
-		http.Error(w, "user not found", http.StatusUnauthorized)
+	_, user, ok := h.resolveValidatedSession(w, r)
+	if !ok {
 		return
 	}
 
