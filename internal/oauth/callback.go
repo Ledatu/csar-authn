@@ -365,19 +365,19 @@ func handleMergeCallback(
 		return
 	}
 
-	targetID := sess.UserID
+	participantID := sess.UserID
 
 	// Anti-confusion: session user must match merge_target from Goth session.
-	if targetID.String() != mergeTarget {
+	if participantID.String() != mergeTarget {
 		logger.Warn("merge target mismatch",
-			"session_user", targetID, "merge_target", mergeTarget,
+			"session_user", participantID, "merge_target", mergeTarget,
 		)
 		redirectURL := httpx.AppendQuery(frontendURL, "error", "merge_target_mismatch")
 		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 		return
 	}
 
-	// Look up which user owns this OAuth identity (the source).
+	// Look up which user owns this OAuth identity.
 	existingAcct, err := st.GetOAuthAccount(r.Context(), acct.Provider, acct.ProviderUserID)
 	if err != nil {
 		logger.Error("merge callback: cannot find source OAuth account", "error", err)
@@ -386,10 +386,16 @@ func handleMergeCallback(
 		return
 	}
 
-	sourceID := existingAcct.UserID
-	if sourceID == targetID {
-		logger.Warn("merge callback: source equals target", "user_id", targetID)
-		redirectURL := httpx.AppendQuery(frontendURL, "error", "merge_self")
+	targetID, sourceID, err := store.ResolveMergeDirectionByID(r.Context(), st, participantID, existingAcct.UserID)
+	if err != nil {
+		if errors.Is(err, store.ErrSelfMerge) {
+			logger.Warn("merge callback: source equals target", "user_id", participantID)
+			redirectURL := httpx.AppendQuery(frontendURL, "error", "merge_self")
+			http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
+			return
+		}
+		logger.Error("merge callback: cannot resolve merge direction", "error", err)
+		redirectURL := httpx.AppendQuery(frontendURL, "error", "merge_invalid")
 		http.Redirect(w, r, redirectURL, http.StatusTemporaryRedirect)
 		return
 	}

@@ -18,9 +18,10 @@ func setupMergeFixture(t *testing.T) (*mock.Store, *store.User, *store.User) {
 	t.Helper()
 	s := mock.New()
 	ctx := context.Background()
+	now := time.Now()
 
-	userA := &store.User{ID: uuid.New(), Email: "a@example.com", DisplayName: "User A"}
-	userB := &store.User{ID: uuid.New(), Phone: "+1111111111", DisplayName: "User B", AvatarURL: "https://avatar.b"}
+	userA := &store.User{ID: uuid.New(), Email: "a@example.com", DisplayName: "User A", CreatedAt: now.Add(-2 * time.Hour)}
+	userB := &store.User{ID: uuid.New(), Phone: "+1111111111", DisplayName: "User B", AvatarURL: "https://avatar.b", CreatedAt: now.Add(-time.Hour)}
 	s.SeedUser(userA)
 	s.SeedUser(userB)
 
@@ -125,6 +126,29 @@ func TestConsumeMergeRecord_HappyPath(t *testing.T) {
 	}
 	if consumed.SourceUser != userB.ID {
 		t.Fatal("wrong source user")
+	}
+}
+
+func TestConsumeMergeRecord_SourceParticipant(t *testing.T) {
+	s, userA, userB := setupMergeFixture(t)
+	ctx := context.Background()
+
+	rec := &store.MergeRecord{
+		ID:         uuid.New(),
+		TokenHash:  hashToken("source-participant"),
+		SourceUser: userB.ID,
+		TargetUser: userA.ID,
+		CreatedAt:  time.Now(),
+		ExpiresAt:  time.Now().Add(5 * time.Minute),
+	}
+	_ = s.CreateMergeRecord(ctx, rec)
+
+	consumed, err := s.ConsumeMergeRecord(ctx, hashToken("source-participant"), userB.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if consumed.TargetUser != userA.ID {
+		t.Fatalf("target = %s, want %s", consumed.TargetUser, userA.ID)
 	}
 }
 

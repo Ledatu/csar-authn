@@ -403,8 +403,8 @@ type Store interface {
 
 	// ConsumeMergeRecord atomically marks a merge record as consumed.
 	// Returns ErrMergeTokenExpired if the record is missing, expired, or already consumed.
-	// Validates that targetUser matches the record's target.
-	ConsumeMergeRecord(ctx context.Context, tokenHash string, targetUser uuid.UUID) (*MergeRecord, error)
+	// Validates that participantUser matches either source_user or target_user on the record.
+	ConsumeMergeRecord(ctx context.Context, tokenHash string, participantUser uuid.UUID) (*MergeRecord, error)
 
 	// MergeUsers transfers all data from source to target in a single transaction:
 	// moves oauth_accounts, revokes source sessions, smart-merges profile, soft-deletes source.

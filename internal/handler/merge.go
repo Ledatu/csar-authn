@@ -77,14 +77,14 @@ func (h *Handler) handleMergeInitiate(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleMerge executes the merge after the user has completed the
-// re-authentication flow. Validates session cookie (target) and
-// csar_merge cookie (proves source ownership).
+// re-authentication flow. Validates session cookie (participant) and
+// csar_merge cookie (proves merge intent).
 func (h *Handler) handleMerge(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticateRequest(w, r)
+	sess, user, ok := h.authenticateRequest(w, r)
 	if !ok {
 		return
 	}
-	targetID := user.ID
+	participantID := user.ID
 
 	// Read the merge cookie.
 	mergeCookie, err := r.Cookie("csar_merge")
@@ -98,15 +98,16 @@ func (h *Handler) handleMerge(w http.ResponseWriter, r *http.Request) {
 	tokenHash := hex.EncodeToString(hash[:])
 
 	// Atomically consume the merge record.
-	rec, err := h.store.ConsumeMergeRecord(r.Context(), tokenHash, targetID)
+	rec, err := h.store.ConsumeMergeRecord(r.Context(), tokenHash, participantID)
 	if err != nil {
 		h.logger.Warn("merge record consumption failed",
-			"target_user", targetID, "error", err,
+			"participant_user", participantID, "error", err,
 		)
 		http.Error(w, "merge token invalid, expired, or already used", http.StatusBadRequest)
 		return
 	}
 
+	targetID := rec.TargetUser
 	sourceID := rec.SourceUser
 
 	// Execute the authn-side merge.
@@ -154,6 +155,17 @@ func (h *Handler) handleMerge(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 		HttpOnly: true,
 	})
+
+	// If the active session belonged to the merged-away source, continue as target.
+	if sess != nil && participantID == sourceID {
+		newSess, err := h.sessMgr.Create(r.Context(), targetID, r.UserAgent(), r.RemoteAddr)
+		if err != nil {
+			h.logger.Error("failed to create session after merge", "target_user", targetID, "error", err)
+			http.Error(w, "merge completed but session refresh failed", http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, h.sessionCookie(newSess.ID, h.sessMgr.CookieMaxAge(newSess)))
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{

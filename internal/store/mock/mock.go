@@ -983,11 +983,12 @@ func (s *Store) CreateMergeRecord(_ context.Context, rec *store.MergeRecord) err
 	return nil
 }
 
-func (s *Store) ConsumeMergeRecord(_ context.Context, tokenHash string, targetUser uuid.UUID) (*store.MergeRecord, error) {
+func (s *Store) ConsumeMergeRecord(_ context.Context, tokenHash string, participantUser uuid.UUID) (*store.MergeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	rec, ok := s.mergeRecords[tokenHash]
-	if !ok || rec.ConsumedAt != nil || time.Now().After(rec.ExpiresAt) || rec.TargetUser != targetUser {
+	if !ok || rec.ConsumedAt != nil || time.Now().After(rec.ExpiresAt) ||
+		(rec.TargetUser != participantUser && rec.SourceUser != participantUser) {
 		return nil, store.ErrMergeTokenExpired
 	}
 	now := time.Now()

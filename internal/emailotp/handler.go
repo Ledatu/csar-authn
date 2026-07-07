@@ -270,19 +270,24 @@ func (h *Handler) finalizeLink(w http.ResponseWriter, r *http.Request, challenge
 	})
 }
 
-func (h *Handler) handleMerge(w http.ResponseWriter, r *http.Request, challenge *store.EmailOTPChallenge, targetID uuid.UUID) {
+func (h *Handler) handleMerge(w http.ResponseWriter, r *http.Request, challenge *store.EmailOTPChallenge, participantID uuid.UUID) {
 	existingAcct, err := h.store.GetOAuthAccount(r.Context(), providerEmail, challenge.Email)
 	if err != nil {
 		h.logger.Error("looking up existing email account for merge", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	sourceID := existingAcct.UserID
-	if sourceID == targetID {
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"result":   "linked",
-			"provider": providerEmail,
-		})
+	targetID, sourceID, err := store.ResolveMergeDirectionByID(r.Context(), h.store, participantID, existingAcct.UserID)
+	if err != nil {
+		if errors.Is(err, store.ErrSelfMerge) {
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{
+				"result":   "linked",
+				"provider": providerEmail,
+			})
+			return
+		}
+		h.logger.Error("resolving email OTP merge direction", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 

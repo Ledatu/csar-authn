@@ -909,17 +909,17 @@ func (s *Store) CreateMergeRecord(ctx context.Context, rec *store.MergeRecord) e
 	return nil
 }
 
-func (s *Store) ConsumeMergeRecord(ctx context.Context, tokenHash string, targetUser uuid.UUID) (*store.MergeRecord, error) {
+func (s *Store) ConsumeMergeRecord(ctx context.Context, tokenHash string, participantUser uuid.UUID) (*store.MergeRecord, error) {
 	rec := &store.MergeRecord{}
 	err := s.pool.QueryRow(ctx,
 		`UPDATE merge_records
 		 SET consumed_at = now()
 		 WHERE token_hash = $1
-		   AND target_user = $2
+		   AND (target_user = $2 OR source_user = $2)
 		   AND consumed_at IS NULL
 		   AND expires_at > now()
 		 RETURNING id, token_hash, source_user, target_user, created_at, expires_at, consumed_at, authz_completed_at`,
-		tokenHash, targetUser,
+		tokenHash, participantUser,
 	).Scan(&rec.ID, &rec.TokenHash, &rec.SourceUser, &rec.TargetUser, &rec.CreatedAt, &rec.ExpiresAt, &rec.ConsumedAt, &rec.AuthzCompletedAt)
 	if pgutil.IsNotFound(err) {
 		return nil, store.ErrMergeTokenExpired

@@ -139,7 +139,7 @@ func (h *Handler) finalizeLink(w http.ResponseWriter, r *http.Request, v *store.
 
 // handleBotMerge creates a merge record when the bot-verified identity already
 // belongs to a different user, reusing the existing merge_records infrastructure.
-func (h *Handler) handleBotMerge(w http.ResponseWriter, r *http.Request, v *store.BotVerification, targetID uuid.UUID) {
+func (h *Handler) handleBotMerge(w http.ResponseWriter, r *http.Request, v *store.BotVerification, participantID uuid.UUID) {
 	ctx := r.Context()
 
 	existingAcct, err := h.store.GetOAuthAccount(ctx, v.Provider, v.ProviderUserID)
@@ -149,12 +149,17 @@ func (h *Handler) handleBotMerge(w http.ResponseWriter, r *http.Request, v *stor
 		return
 	}
 
-	sourceID := existingAcct.UserID
-	if sourceID == targetID {
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
-			"result":   "linked",
-			"provider": v.Provider,
-		})
+	targetID, sourceID, err := store.ResolveMergeDirectionByID(ctx, h.store, participantID, existingAcct.UserID)
+	if err != nil {
+		if errors.Is(err, store.ErrSelfMerge) {
+			httpx.WriteJSON(w, http.StatusOK, map[string]any{
+				"result":   "linked",
+				"provider": v.Provider,
+			})
+			return
+		}
+		h.logger.Error("resolving bot merge direction", "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
