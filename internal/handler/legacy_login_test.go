@@ -202,14 +202,120 @@ func TestLegacyTelegramSession_RejectsMissingIssuedAt(t *testing.T) {
 	}
 }
 
-func TestLegacyTelegramSession_RejectsUnknownAccount(t *testing.T) {
-	h, _, _ := newSessionsHandler(t, nil)
+func TestLegacyTelegramSession_CreatesUnknownAccount(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
 	enableLegacyTelegramJWT(h)
 
-	token := legacyTelegramToken(t, legacyTelegramClaims(json.Number("620109623")), jwt.SigningMethodHS256)
+	claims := legacyTelegramClaims(json.Number("620109623"))
+	claims["username"] = "diagen_001"
+	token := legacyTelegramToken(t, claims, jwt.SigningMethodHS256)
 	w := postLegacyTelegramSession(h, token)
-	if w.Code != http.StatusUnauthorized {
-		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	acct, err := st.GetOAuthAccount(context.Background(), "telegram", "620109623")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acct.DisplayName != "@diagen_001" {
+		t.Fatalf("account display name = %q, want @diagen_001", acct.DisplayName)
+	}
+	if acct.ProviderMetadata["legacy_username"] != "diagen_001" {
+		t.Fatalf("legacy username metadata = %#v, want diagen_001", acct.ProviderMetadata["legacy_username"])
+	}
+
+	user, err := st.GetUserByID(context.Background(), acct.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.Email != "" || user.Phone != "" || user.AvatarURL != "" {
+		t.Fatalf("expected sparse user profile, got email=%q phone=%q avatar=%q", user.Email, user.Phone, user.AvatarURL)
+	}
+	if user.DisplayName != "@diagen_001" {
+		t.Fatalf("user display name = %q, want @diagen_001", user.DisplayName)
+	}
+
+	sessions, err := st.ListUserSessions(context.Background(), user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 created session, got %d", len(sessions))
+	}
+}
+
+func TestLegacyTelegramSession_CreatesUnknownAccountWithoutUsableUsername(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
+	enableLegacyTelegramJWT(h)
+
+	claims := legacyTelegramClaims(json.Number("620109624"))
+	claims["username"] = "bad username"
+	token := legacyTelegramToken(t, claims, jwt.SigningMethodHS256)
+	w := postLegacyTelegramSession(h, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	acct, err := st.GetOAuthAccount(context.Background(), "telegram", "620109624")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acct.DisplayName != "" {
+		t.Fatalf("account display name = %q, want empty", acct.DisplayName)
+	}
+	if _, ok := acct.ProviderMetadata["legacy_username"]; ok {
+		t.Fatalf("expected no legacy username metadata, got %#v", acct.ProviderMetadata)
+	}
+
+	user, err := st.GetUserByID(context.Background(), acct.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if user.DisplayName != "" {
+		t.Fatalf("user display name = %q, want empty", user.DisplayName)
+	}
+	if user.Email != "" || user.Phone != "" || user.AvatarURL != "" {
+		t.Fatalf("expected sparse user profile, got email=%q phone=%q avatar=%q", user.Email, user.Phone, user.AvatarURL)
+	}
+}
+
+func TestLegacyTelegramSession_IsIdempotentForUnknownAccount(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
+	enableLegacyTelegramJWT(h)
+
+	claims := legacyTelegramClaims(json.Number("620109625"))
+	claims["username"] = "diagen_002"
+	token := legacyTelegramToken(t, claims, jwt.SigningMethodHS256)
+
+	first := postLegacyTelegramSession(h, token)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request: expected 200, got %d: %s", first.Code, first.Body.String())
+	}
+	acct, err := st.GetOAuthAccount(context.Background(), "telegram", "620109625")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userID := acct.UserID
+
+	second := postLegacyTelegramSession(h, token)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second request: expected 200, got %d: %s", second.Code, second.Body.String())
+	}
+
+	acctAfter, err := st.GetOAuthAccount(context.Background(), "telegram", "620109625")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if acctAfter.UserID != userID {
+		t.Fatalf("expected oauth account to stay linked to %s, got %s", userID, acctAfter.UserID)
+	}
+	sessions, err := st.ListUserSessions(context.Background(), userID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("expected two sessions for repeated exchange, got %d", len(sessions))
 	}
 }
 

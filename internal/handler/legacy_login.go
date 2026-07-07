@@ -23,6 +23,11 @@ type legacyTelegramSessionRequest struct {
 	Token string `json:"token"`
 }
 
+type legacyTelegramIdentity struct {
+	ProviderUserID string
+	Username       string
+}
+
 func (h *Handler) handleLegacyTelegramSession(w http.ResponseWriter, r *http.Request) {
 	cfg := h.cfg.Load()
 	legacyCfg := cfg.LegacyLogin.TelegramJWT
@@ -37,25 +42,31 @@ func (h *Handler) handleLegacyTelegramSession(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	providerUserID, err := verifyLegacyTelegramJWT(strings.TrimSpace(body.Token), legacyCfg, time.Now())
+	identity, err := verifyLegacyTelegramJWT(strings.TrimSpace(body.Token), legacyCfg, time.Now())
 	if err != nil {
 		h.logger.Warn("legacy telegram JWT rejected", "error", err)
 		apierror.New("not_authenticated", http.StatusUnauthorized, "legacy token is invalid").Write(w)
 		return
 	}
 
-	acct, err := h.store.GetOAuthAccount(r.Context(), legacyTelegramProvider, providerUserID)
-	if err != nil {
-		if !errors.Is(err, store.ErrNotFound) {
-			h.logger.Error("failed to load legacy telegram oauth account", "provider_user_id", providerUserID, "error", err)
-		}
-		apierror.New("not_authenticated", http.StatusUnauthorized, "legacy token is invalid").Write(w)
-		return
+	displayName := legacyTelegramDisplayName(identity.Username)
+	acct := &store.OAuthAccount{
+		Provider:       legacyTelegramProvider,
+		ProviderUserID: identity.ProviderUserID,
+		DisplayName:    displayName,
+	}
+	if identity.Username != "" {
+		acct.ProviderMetadata = map[string]interface{}{"legacy_username": identity.Username}
+	} else if existing, lookupErr := h.store.GetOAuthAccount(r.Context(), legacyTelegramProvider, identity.ProviderUserID); lookupErr == nil {
+		acct.DisplayName = existing.DisplayName
+		acct.ProviderMetadata = existing.ProviderMetadata
+	} else if !errors.Is(lookupErr, store.ErrNotFound) {
+		h.logger.Warn("failed to preload legacy telegram oauth account", "provider_user_id", identity.ProviderUserID, "error", lookupErr)
 	}
 
-	user, err := h.store.GetUserByID(r.Context(), acct.UserID)
+	user, result, err := h.store.FindOrCreateUser(r.Context(), acct, "", "", displayName, "")
 	if err != nil {
-		h.logger.Warn("legacy telegram account points to missing user", "user_id", acct.UserID, "provider_user_id", providerUserID, "error", err)
+		h.logger.Error("failed to find or create legacy telegram account", "provider_user_id", identity.ProviderUserID, "error", err)
 		apierror.New("not_authenticated", http.StatusUnauthorized, "legacy token is invalid").Write(w)
 		return
 	}
@@ -73,10 +84,15 @@ func (h *Handler) handleLegacyTelegramSession(w http.ResponseWriter, r *http.Req
 	}
 
 	http.SetCookie(w, h.sessionCookie(sess.ID, h.sessMgr.CookieMaxAge(sess)))
-	afterJSON, _ := json.Marshal(map[string]string{
+	after := map[string]interface{}{
 		"provider":         legacyTelegramProvider,
-		"provider_user_id": providerUserID,
-	})
+		"provider_user_id": identity.ProviderUserID,
+		"created_new_user": result == store.ResultCreatedNewUser,
+	}
+	if identity.Username != "" {
+		after["legacy_username"] = identity.Username
+	}
+	afterJSON, _ := json.Marshal(after)
 	h.recordAudit(r, user.ID.String(), "legacy_login.telegram_session", "user", user.ID.String(), afterJSON)
 
 	httpx.WriteJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -86,9 +102,9 @@ func legacyEndpointExpired(cfg config.LegacyTelegramJWTConfig, now time.Time) bo
 	return !cfg.EndpointEnabledUntil.IsZero() && now.After(cfg.EndpointEnabledUntil)
 }
 
-func verifyLegacyTelegramJWT(tokenString string, cfg config.LegacyTelegramJWTConfig, now time.Time) (string, error) {
+func verifyLegacyTelegramJWT(tokenString string, cfg config.LegacyTelegramJWTConfig, now time.Time) (legacyTelegramIdentity, error) {
 	if tokenString == "" {
-		return "", errors.New("missing token")
+		return legacyTelegramIdentity{}, errors.New("missing token")
 	}
 
 	options := []jwt.ParserOption{
@@ -112,27 +128,30 @@ func verifyLegacyTelegramJWT(tokenString string, cfg config.LegacyTelegramJWTCon
 		return []byte(cfg.HMACSecret), nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("verify token: %w", err)
+		return legacyTelegramIdentity{}, fmt.Errorf("verify token: %w", err)
 	}
 
 	iat, err := legacyNumericDate(claims, "iat")
 	if err != nil {
-		return "", err
+		return legacyTelegramIdentity{}, err
 	}
 	if iat.After(now.Add(30 * time.Second)) {
-		return "", errors.New("token issued in the future")
+		return legacyTelegramIdentity{}, errors.New("token issued in the future")
 	}
 	if cfg.MaxTokenAge.Duration > 0 {
 		if now.After(iat.Add(cfg.MaxTokenAge.Duration)) {
-			return "", errors.New("token exceeds max age")
+			return legacyTelegramIdentity{}, errors.New("token exceeds max age")
 		}
 	}
 
 	providerID, err := legacyTelegramID(claims["id"])
 	if err != nil {
-		return "", err
+		return legacyTelegramIdentity{}, err
 	}
-	return providerID, nil
+	return legacyTelegramIdentity{
+		ProviderUserID: providerID,
+		Username:       legacyTelegramUsername(claims["username"]),
+	}, nil
 }
 
 func legacyNumericDate(claims jwt.MapClaims, name string) (time.Time, error) {
@@ -178,4 +197,38 @@ func legacyTelegramID(value any) (string, error) {
 	default:
 		return "", errors.New("missing telegram id")
 	}
+}
+
+func legacyTelegramUsername(value any) string {
+	raw, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	username := strings.TrimPrefix(strings.TrimSpace(raw), "@")
+	if len(username) < 5 || len(username) > 32 {
+		return ""
+	}
+	for _, r := range username {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '_' {
+			continue
+		}
+		return ""
+	}
+	return username
+}
+
+func legacyTelegramDisplayName(username string) string {
+	if username == "" {
+		return ""
+	}
+	return "@" + username
 }

@@ -99,7 +99,9 @@ During a one-time portal migration, `POST /auth/legacy/telegram/session` can be 
 { "token": "<legacy-jwt>" }
 ```
 
-The legacy token must contain an `id` claim such as `416663223`; `csar-authn` resolves it as the Telegram OAuth account `provider_user_id`, creates an opaque session, and sets the configured session cookie. Tokens produced by `jsonwebtoken.sign({ id, username }, secret)` are supported: `exp` is honored when present, but is not required; tokens without `exp` are bounded by `max_token_age` from `iat`. The endpoint does not create users or link accounts.
+The legacy token must contain an `id` claim such as `416663223`; `csar-authn` resolves it as the Telegram OAuth account `provider_user_id`, creates an opaque session, and sets the configured session cookie. Tokens produced by `jsonwebtoken.sign({ id, username }, secret)` are supported: `exp` is honored when present, but is not required; tokens without `exp` are bounded by `max_token_age` from `iat`.
+
+If the Telegram OAuth account is not yet present, the endpoint creates a sparse authn user and links the Telegram provider account. The sparse user intentionally has no email, phone, or avatar. When the token has a Telegram-safe `username`, the user and provider display name are initialized to `@username`, and the raw username is recorded as `provider_metadata.legacy_username`. Later OAuth linking or profile updates can enrich the account with verified user data.
 
 ```yaml
 legacy_login:
