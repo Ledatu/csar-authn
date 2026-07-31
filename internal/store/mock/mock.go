@@ -63,6 +63,70 @@ func (s *Store) GetUserByID(_ context.Context, id uuid.UUID) (*store.User, error
 	return &cp, nil
 }
 
+// followMergedLocked walks merged_into to the canonical user. Callers must hold s.mu.
+func (s *Store) followMergedLocked(id uuid.UUID) (*store.User, bool) {
+	u, ok := s.users[id]
+	if !ok {
+		return nil, false
+	}
+	for hops := 0; u.MergedInto != nil && hops < 5; hops++ {
+		next, ok := s.users[*u.MergedInto]
+		if !ok {
+			break
+		}
+		u = next
+	}
+	return u, true
+}
+
+func (s *Store) GetUsersByIDs(_ context.Context, ids []uuid.UUID) ([]store.ResolvedUser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	seen := make(map[uuid.UUID]struct{}, len(ids))
+	var out []store.ResolvedUser
+	for _, id := range ids {
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		u, ok := s.followMergedLocked(id)
+		if !ok {
+			continue
+		}
+		out = append(out, store.ResolvedUser{User: *u, RequestedID: id})
+	}
+	return out, nil
+}
+
+func (s *Store) GetUsersByProviderIDs(_ context.Context, provider string, providerUserIDs []string) ([]store.ProviderUser, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	seen := make(map[string]struct{}, len(providerUserIDs))
+	var out []store.ProviderUser
+	for _, pid := range providerUserIDs {
+		if _, dup := seen[pid]; dup {
+			continue
+		}
+		seen[pid] = struct{}{}
+		acct, ok := s.accounts[oauthKey(provider, pid)]
+		if !ok {
+			continue
+		}
+		u, ok := s.followMergedLocked(acct.UserID)
+		if !ok {
+			continue
+		}
+		out = append(out, store.ProviderUser{
+			User:             *u,
+			ProviderUserID:   acct.ProviderUserID,
+			ProviderMetadata: acct.ProviderMetadata,
+		})
+	}
+	return out, nil
+}
+
 func (s *Store) GetUserByEmail(_ context.Context, email string) (*store.User, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

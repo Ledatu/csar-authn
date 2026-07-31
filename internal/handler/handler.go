@@ -34,7 +34,7 @@ type Handler struct {
 	emailOTPSender emailotp.Sender
 	stsHandler     *sts.Handler   // nil when STS is not configured
 	authzClient    *AuthzClient   // nil when authz is not configured
-	avatarClient   avatarService  // nil when avatar storage is not configured
+	avatarClient   AvatarService  // nil when avatar storage is not configured
 	auditRecorder  audit.Recorder // nil when audit is not configured
 	logger         *slog.Logger
 	cfg            atomic.Pointer[config.Config]
@@ -42,7 +42,7 @@ type Handler struct {
 
 // New creates a Handler with all dependencies.
 // stsHandler, authzClient, and auditRecorder may be nil when their features are not enabled.
-func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, emailOTPSender emailotp.Sender, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient avatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
+func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, emailOTPSender emailotp.Sender, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient AvatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
 	h := &Handler{
 		store:          st,
 		sessionMgr:     sessionMgr,
@@ -118,6 +118,11 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /auth/me/avatar/finalize-set", h.handleFinalizeAvatarSet)
 	mux.HandleFunc("DELETE /auth/me/avatar", h.handleDeleteAvatar)
 	mux.HandleFunc("DELETE /auth/me/emails", h.handleDeleteMeEmail)
+
+	// Directory reads for authenticated browsers. These need only a valid
+	// session, so they stay outside the authz-gated admin block below.
+	mux.HandleFunc("POST /auth/users/resolve", h.handleResolveBrowserUsers)
+	mux.HandleFunc("POST /auth/users/lookup", h.handleLookupBrowserUser)
 
 	// Current user's active sessions: GET /auth/me/sessions
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)

@@ -85,6 +85,101 @@ func (s *Store) GetUserByID(ctx context.Context, id uuid.UUID) (*store.User, err
 	return u, nil
 }
 
+// userColumns is the canonical projection for a full store.User row.
+const userColumns = `u.id, COALESCE(u.email, ''), COALESCE(u.phone, ''), u.display_name,
+	        COALESCE(u.avatar_storage_key, ''), COALESCE(u.avatar_preview_storage_key, ''), COALESCE(u.avatar_master_storage_key, ''),
+	        u.avatar_url, u.created_at, u.updated_at, u.merged_into, u.merged_at`
+
+// maxMergeHops bounds the merged_into walk, matching followMerge in the handler
+// layer. It also guarantees termination if a cycle is ever written.
+const maxMergeHops = 5
+
+func (s *Store) GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]store.ResolvedUser, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`WITH RECURSIVE seeds AS (
+		     SELECT DISTINCT unnest($1::uuid[]) AS seed_id
+		 ), chain AS (
+		     SELECT s.seed_id, u.id, u.merged_into, 0 AS depth
+		       FROM seeds s JOIN users u ON u.id = s.seed_id
+		     UNION ALL
+		     SELECT c.seed_id, u.id, u.merged_into, c.depth + 1
+		       FROM chain c JOIN users u ON u.id = c.merged_into
+		      WHERE c.depth < $2
+		 ), canonical AS (
+		     SELECT DISTINCT ON (seed_id) seed_id, id AS user_id
+		       FROM chain ORDER BY seed_id, depth DESC
+		 )
+		 SELECT c.seed_id, `+userColumns+`
+		   FROM canonical c JOIN users u ON u.id = c.user_id`,
+		ids, maxMergeHops,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get users by ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ResolvedUser
+	for rows.Next() {
+		var r store.ResolvedUser
+		if err := rows.Scan(&r.RequestedID, &r.ID, &r.Email, &r.Phone, &r.DisplayName,
+			&r.AvatarStorageKey, &r.AvatarPreviewStorageKey, &r.AvatarMasterStorageKey,
+			&r.AvatarURL, &r.CreatedAt, &r.UpdatedAt, &r.MergedInto, &r.MergedAt); err != nil {
+			return nil, fmt.Errorf("scanning user by id: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) GetUsersByProviderIDs(ctx context.Context, provider string, providerUserIDs []string) ([]store.ProviderUser, error) {
+	if len(providerUserIDs) == 0 {
+		return nil, nil
+	}
+
+	rows, err := s.pool.Query(ctx,
+		`WITH RECURSIVE seeds AS (
+		     SELECT oa.provider_user_id AS seed_key, oa.provider_metadata, oa.user_id
+		       FROM oauth_accounts oa
+		      WHERE oa.provider = $1 AND oa.provider_user_id = ANY($2)
+		 ), chain AS (
+		     SELECT s.seed_key, u.id, u.merged_into, 0 AS depth
+		       FROM seeds s JOIN users u ON u.id = s.user_id
+		     UNION ALL
+		     SELECT c.seed_key, u.id, u.merged_into, c.depth + 1
+		       FROM chain c JOIN users u ON u.id = c.merged_into
+		      WHERE c.depth < $3
+		 ), canonical AS (
+		     SELECT DISTINCT ON (seed_key) seed_key, id AS user_id
+		       FROM chain ORDER BY seed_key, depth DESC
+		 )
+		 SELECT s.seed_key, s.provider_metadata, `+userColumns+`
+		   FROM canonical c
+		   JOIN seeds s ON s.seed_key = c.seed_key
+		   JOIN users u ON u.id = c.user_id`,
+		provider, providerUserIDs, maxMergeHops,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get users by provider ids: %w", err)
+	}
+	defer rows.Close()
+
+	var out []store.ProviderUser
+	for rows.Next() {
+		var p store.ProviderUser
+		if err := rows.Scan(&p.ProviderUserID, &p.ProviderMetadata, &p.ID, &p.Email, &p.Phone, &p.DisplayName,
+			&p.AvatarStorageKey, &p.AvatarPreviewStorageKey, &p.AvatarMasterStorageKey,
+			&p.AvatarURL, &p.CreatedAt, &p.UpdatedAt, &p.MergedInto, &p.MergedAt); err != nil {
+			return nil, fmt.Errorf("scanning user by provider id: %w", err)
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) GetUserByEmail(ctx context.Context, email string) (*store.User, error) {
 	u := &store.User{}
 	err := s.pool.QueryRow(ctx,

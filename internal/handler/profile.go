@@ -43,7 +43,9 @@ var (
 	}
 )
 
-type avatarService interface {
+// AvatarService is the avatar storage surface the handler depends on.
+// Exported so callers can hold it as a nil interface when storage is unconfigured.
+type AvatarService interface {
 	CreateUploadIntent(ctx context.Context, req avatar.UploadIntentRequest) (*avatar.UploadIntentResponse, error)
 	FinalizeAvatar(ctx context.Context, req avatar.FinalizeAvatarRequest) (*avatar.FinalizeAvatarResponse, error)
 	DeleteObject(ctx context.Context, storageKey string) error

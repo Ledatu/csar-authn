@@ -219,6 +219,23 @@ type UserSearchResult struct {
 	AvatarURL               string
 }
 
+// ResolvedUser pairs the id a caller asked for with the canonical user it
+// resolves to. The two differ when the requested account has been merged away;
+// callers that key results by their request must use RequestedID.
+type ResolvedUser struct {
+	User
+	RequestedID uuid.UUID
+}
+
+// ProviderUser is a user reached through one of its linked provider accounts.
+// The provider fields describe the link that matched, so callers can echo the
+// requested identifier back without a second lookup.
+type ProviderUser struct {
+	User
+	ProviderUserID   string
+	ProviderMetadata map[string]interface{}
+}
+
 // ManagedAvatar stores the complete managed avatar variant set for a user.
 type ManagedAvatar struct {
 	DefaultStorageKey string
@@ -245,6 +262,16 @@ type Store interface {
 	// GetUserByID returns a user by primary key.
 	// Returns ErrNotFound if the user does not exist.
 	GetUserByID(ctx context.Context, id uuid.UUID) (*User, error)
+
+	// GetUsersByIDs returns the users matching ids in a single query.
+	// Unknown ids are omitted rather than reported as errors, and merged
+	// accounts resolve to their canonical user.
+	GetUsersByIDs(ctx context.Context, ids []uuid.UUID) ([]ResolvedUser, error)
+
+	// GetUsersByProviderIDs returns the users linked to the given provider
+	// identifiers in a single query. Unknown identifiers are omitted and
+	// merged accounts resolve to their canonical user.
+	GetUsersByProviderIDs(ctx context.Context, provider string, providerUserIDs []string) ([]ProviderUser, error)
 
 	// GetUserByEmail returns a user by email (case-insensitive).
 	// Returns ErrNotFound if no user with that email exists.

@@ -56,7 +56,7 @@ func (m *mockAvatarClient) SignedReadURL(_ context.Context, storageKey string) (
 	return m.signedReadURLFn(storageKey)
 }
 
-func newProfileHandler(t *testing.T, avatarClient avatarService) (*Handler, *mock.Store) {
+func newProfileHandler(t *testing.T, avatarClient AvatarService) (*Handler, *mock.Store) {
 	t.Helper()
 
 	kp, err := jwtx.GenerateKeyPair("EdDSA")
