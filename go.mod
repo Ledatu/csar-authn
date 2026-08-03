@@ -7,8 +7,8 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
-	github.com/jackc/pgx/v5 v5.9.2
-	github.com/ledatu/csar-core v0.1.33
+	github.com/jackc/pgx/v5 v5.10.0
+	github.com/ledatu/csar-core v0.1.36
 	github.com/ledatu/csar-proto v0.1.4
 	github.com/markbates/goth v1.80.0
 	github.com/redis/go-redis/v9 v9.19.0
