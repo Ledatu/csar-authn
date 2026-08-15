@@ -172,4 +172,3 @@ func TestCachingClient_EmptyKeyAndNilClient(t *testing.T) {
 		t.Error("NewCachingClient(nil) should return nil")
 	}
 }
-
