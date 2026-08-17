@@ -79,6 +79,31 @@ func (sm *SessionManager) Create(ctx context.Context, userID uuid.UUID, userAgen
 	return sess, nil
 }
 
+// CreateImpersonated inserts a session for targetUserID on behalf of an admin.
+// The session has a fixed ttl expiry and is excluded from sliding refresh.
+func (sm *SessionManager) CreateImpersonated(ctx context.Context, targetUserID, impersonatorID uuid.UUID, reason, userAgent, ip string, ttl time.Duration) (*store.Session, error) {
+	id, err := generateSessionID()
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	sess := &store.Session{
+		ID:                  id,
+		UserID:              targetUserID,
+		CreatedAt:           now,
+		LastSeenAt:          now,
+		ExpiresAt:           now.Add(ttl),
+		UserAgent:           userAgent,
+		IPAddress:           ip,
+		ImpersonatorUserID:  &impersonatorID,
+		ImpersonationReason: reason,
+	}
+	if err := sm.store.CreateSession(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
 // Validate checks that a session is alive and optionally extends it.
 func (sm *SessionManager) Validate(ctx context.Context, sessionID string) (*store.Session, error) {
 	sess, err := sm.store.GetSession(ctx, sessionID)
@@ -94,7 +119,7 @@ func (sm *SessionManager) Validate(ctx context.Context, sessionID string) (*stor
 		return nil, ErrSessionExpired
 	}
 
-	if now.Sub(sess.LastSeenAt) > sm.touchThreshold {
+	if sess.ImpersonatorUserID == nil && now.Sub(sess.LastSeenAt) > sm.touchThreshold {
 		newExpiry := now.Add(sm.idleTimeout)
 		if absExpiry := sess.CreatedAt.Add(sm.maxAge); newExpiry.After(absExpiry) {
 			newExpiry = absExpiry
@@ -122,7 +147,15 @@ func (sm *SessionManager) RevokeAll(ctx context.Context, userID uuid.UUID) error
 
 // CookieMaxAge returns the number of seconds the browser cookie should live.
 // It is the lesser of (absolute time remaining) and (idle_timeout).
+// Impersonated sessions never slide, so their cookie lives exactly until expiry.
 func (sm *SessionManager) CookieMaxAge(s *store.Session) int {
+	if s.ImpersonatorUserID != nil {
+		remaining := int(time.Until(s.ExpiresAt).Seconds())
+		if remaining <= 0 {
+			return 0
+		}
+		return remaining
+	}
 	absRemaining := time.Until(s.CreatedAt.Add(sm.maxAge))
 	idle := sm.idleTimeout
 	if absRemaining < idle {

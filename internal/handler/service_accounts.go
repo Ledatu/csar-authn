@@ -102,9 +102,9 @@ func saToResponse(sa *store.ServiceAccount) saResponse {
 // --- Handlers ---
 
 func (h *Handler) handleListServiceAccounts(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 
@@ -138,9 +138,9 @@ type createSARequest struct {
 }
 
 func (h *Handler) handleCreateServiceAccount(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 
@@ -217,9 +217,9 @@ func (h *Handler) handleCreateServiceAccount(w http.ResponseWriter, r *http.Requ
 }
 
 func (h *Handler) handleGetServiceAccount(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 
@@ -255,9 +255,9 @@ func (h *Handler) handleGetServiceAccount(w http.ResponseWriter, r *http.Request
 }
 
 func (h *Handler) handleRevokeServiceAccount(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 
@@ -297,9 +297,9 @@ type rotateSARequest struct {
 }
 
 func (h *Handler) handleRotateServiceAccount(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 

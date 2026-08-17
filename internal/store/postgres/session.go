@@ -14,9 +14,9 @@ import (
 
 func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 	_, err := s.pool.Exec(ctx,
-		`INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-		sess.ID, sess.UserID, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.UserAgent, sess.IPAddress,
+		`INSERT INTO sessions (id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address, impersonator_user_id, impersonation_reason)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		sess.ID, sess.UserID, sess.CreatedAt, sess.LastSeenAt, sess.ExpiresAt, sess.UserAgent, sess.IPAddress, sess.ImpersonatorUserID, sess.ImpersonationReason,
 	)
 	if err != nil {
 		return fmt.Errorf("create session: %w", err)
@@ -27,9 +27,9 @@ func (s *Store) CreateSession(ctx context.Context, sess *store.Session) error {
 func (s *Store) GetSession(ctx context.Context, sessionID string) (*store.Session, error) {
 	sess := &store.Session{}
 	err := s.pool.QueryRow(ctx,
-		`SELECT id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address, revoked_at
+		`SELECT id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address, revoked_at, impersonator_user_id, impersonation_reason
 		 FROM sessions WHERE id = $1`, sessionID,
-	).Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.UserAgent, &sess.IPAddress, &sess.RevokedAt)
+	).Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.UserAgent, &sess.IPAddress, &sess.RevokedAt, &sess.ImpersonatorUserID, &sess.ImpersonationReason)
 	if pgutil.IsNotFound(err) {
 		return nil, store.ErrNotFound
 	}
@@ -109,7 +109,7 @@ func (s *Store) DeleteExpiredSessions(ctx context.Context) (int64, error) {
 
 func (s *Store) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error) {
 	rows, err := s.pool.Query(ctx,
-		`SELECT id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address, revoked_at
+		`SELECT id, user_id, created_at, last_seen_at, expires_at, user_agent, ip_address, revoked_at, impersonator_user_id, impersonation_reason
 		 FROM sessions
 		 WHERE user_id = $1 AND revoked_at IS NULL AND expires_at > now()
 		 ORDER BY last_seen_at DESC`, userID,
@@ -122,7 +122,7 @@ func (s *Store) ListUserSessions(ctx context.Context, userID uuid.UUID) ([]store
 	var sessions []store.Session
 	for rows.Next() {
 		var sess store.Session
-		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.UserAgent, &sess.IPAddress, &sess.RevokedAt); err != nil {
+		if err := rows.Scan(&sess.ID, &sess.UserID, &sess.CreatedAt, &sess.LastSeenAt, &sess.ExpiresAt, &sess.UserAgent, &sess.IPAddress, &sess.RevokedAt, &sess.ImpersonatorUserID, &sess.ImpersonationReason); err != nil {
 			return nil, fmt.Errorf("scanning session: %w", err)
 		}
 		sessions = append(sessions, sess)
@@ -136,9 +136,12 @@ func (s *Store) ListAdminSessions(ctx context.Context, params store.AdminSession
 	n := 1
 	b.WriteString(`
 SELECT s.id, s.user_id, s.created_at, s.last_seen_at, s.expires_at, s.user_agent, s.ip_address, s.revoked_at,
-       COALESCE(u.email, '') AS user_email
+       s.impersonator_user_id, s.impersonation_reason,
+       COALESCE(u.email, '') AS user_email,
+       COALESCE(imp.email, '') AS impersonator_email
 FROM sessions s
 JOIN users u ON u.id = s.user_id
+LEFT JOIN users imp ON imp.id = s.impersonator_user_id
 WHERE 1=1`)
 	if params.UserID != nil {
 		fmt.Fprintf(&b, " AND s.user_id = $%d", n)
@@ -173,7 +176,9 @@ WHERE 1=1`)
 		var row store.AdminSessionRow
 		if err := rows.Scan(
 			&row.ID, &row.UserID, &row.CreatedAt, &row.LastSeenAt, &row.ExpiresAt,
-			&row.UserAgent, &row.IPAddress, &row.RevokedAt, &row.UserEmail,
+			&row.UserAgent, &row.IPAddress, &row.RevokedAt,
+			&row.ImpersonatorUserID, &row.ImpersonationReason,
+			&row.UserEmail, &row.ImpersonatorEmail,
 		); err != nil {
 			return nil, false, fmt.Errorf("scanning admin session: %w", err)
 		}

@@ -17,31 +17,33 @@ import (
 
 // Store is a thread-safe in-memory implementation of store.Store.
 type Store struct {
-	mu                 sync.Mutex
-	users              map[uuid.UUID]*store.User
-	accounts           map[string]*store.OAuthAccount // key: provider|provider_user_id
-	attributionTouches map[uuid.UUID]*store.AttributionTouch
-	passkeys           map[uuid.UUID]*store.Passkey
-	passkeyChallenges  map[uuid.UUID]*store.PasskeyChallenge
-	serviceAccounts    map[string]*store.ServiceAccount // key: name
-	sessions           map[string]*store.Session        // key: session ID
-	mergeRecords       map[string]*store.MergeRecord    // key: token_hash
-	botVerifications   map[uuid.UUID]*store.BotVerification
-	emailOTPChallenges map[uuid.UUID]*store.EmailOTPChallenge
-	loginHandoffs      map[uuid.UUID]*store.LoginHandoff
+	mu                  sync.Mutex
+	users               map[uuid.UUID]*store.User
+	accounts            map[string]*store.OAuthAccount // key: provider|provider_user_id
+	attributionTouches  map[uuid.UUID]*store.AttributionTouch
+	passkeys            map[uuid.UUID]*store.Passkey
+	passkeyChallenges   map[uuid.UUID]*store.PasskeyChallenge
+	serviceAccounts     map[string]*store.ServiceAccount // key: name
+	sessions            map[string]*store.Session        // key: session ID
+	mergeRecords        map[string]*store.MergeRecord    // key: token_hash
+	botVerifications    map[uuid.UUID]*store.BotVerification
+	emailOTPChallenges  map[uuid.UUID]*store.EmailOTPChallenge
+	loginHandoffs       map[uuid.UUID]*store.LoginHandoff
+	impersonationGrants map[string]*store.ImpersonationGrant // key: token_hash
 }
 
 // New returns a new mock Store.
 func New() *Store {
 	return &Store{
-		users:              make(map[uuid.UUID]*store.User),
-		accounts:           make(map[string]*store.OAuthAccount),
-		attributionTouches: make(map[uuid.UUID]*store.AttributionTouch),
-		passkeys:           make(map[uuid.UUID]*store.Passkey),
-		passkeyChallenges:  make(map[uuid.UUID]*store.PasskeyChallenge),
-		serviceAccounts:    make(map[string]*store.ServiceAccount),
-		emailOTPChallenges: make(map[uuid.UUID]*store.EmailOTPChallenge),
-		loginHandoffs:      make(map[uuid.UUID]*store.LoginHandoff),
+		users:               make(map[uuid.UUID]*store.User),
+		accounts:            make(map[string]*store.OAuthAccount),
+		attributionTouches:  make(map[uuid.UUID]*store.AttributionTouch),
+		passkeys:            make(map[uuid.UUID]*store.Passkey),
+		passkeyChallenges:   make(map[uuid.UUID]*store.PasskeyChallenge),
+		serviceAccounts:     make(map[string]*store.ServiceAccount),
+		emailOTPChallenges:  make(map[uuid.UUID]*store.EmailOTPChallenge),
+		loginHandoffs:       make(map[uuid.UUID]*store.LoginHandoff),
+		impersonationGrants: make(map[string]*store.ImpersonationGrant),
 	}
 }
 
@@ -838,8 +840,15 @@ func (s *Store) ListAdminSessions(_ context.Context, params store.AdminSessionLi
 			}
 		}
 
+		impersonatorEmail := ""
+		if sess.ImpersonatorUserID != nil {
+			if u, ok := s.users[*sess.ImpersonatorUserID]; ok {
+				impersonatorEmail = u.Email
+			}
+		}
+
 		cp := *sess
-		rows = append(rows, store.AdminSessionRow{Session: cp, UserEmail: email})
+		rows = append(rows, store.AdminSessionRow{Session: cp, UserEmail: email, ImpersonatorEmail: impersonatorEmail})
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		return rows[i].LastSeenAt.After(rows[j].LastSeenAt)
@@ -1502,6 +1511,44 @@ func (s *Store) MigrateTelegramID(_ context.Context, oldID, newID string, metada
 	cp := *oldAcct
 	s.accounts[newKey] = &cp
 	return true, nil
+}
+
+func (s *Store) CreateImpersonationGrant(_ context.Context, grant *store.ImpersonationGrant) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.impersonationGrants == nil {
+		s.impersonationGrants = make(map[string]*store.ImpersonationGrant)
+	}
+	cp := *grant
+	s.impersonationGrants[grant.TokenHash] = &cp
+	return nil
+}
+
+func (s *Store) ConsumeImpersonationGrant(_ context.Context, tokenHash string) (*store.ImpersonationGrant, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	grant, ok := s.impersonationGrants[tokenHash]
+	if !ok || grant.ConsumedAt != nil || !time.Now().Before(grant.ExpiresAt) {
+		return nil, store.ErrImpersonationGrantUnavailable
+	}
+	now := time.Now()
+	grant.ConsumedAt = &now
+	cp := *grant
+	return &cp, nil
+}
+
+func (s *Store) DeleteInactiveImpersonationGrants(_ context.Context) (int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now()
+	var n int64
+	for hash, grant := range s.impersonationGrants {
+		if grant.ConsumedAt != nil || !now.Before(grant.ExpiresAt) {
+			delete(s.impersonationGrants, hash)
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *Store) Migrate(_ context.Context) error { return nil }

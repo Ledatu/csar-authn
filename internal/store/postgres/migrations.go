@@ -317,6 +317,27 @@ ALTER TABLE oauth_accounts
   CHECK (provider <> 'email' OR provider_user_id = lower(provider_user_id));
 `,
 	},
+	{
+		Name: "018_impersonation",
+		Up: `
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS impersonator_user_id UUID REFERENCES users(id);
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS impersonation_reason TEXT NOT NULL DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS impersonation_grants (
+    id             UUID PRIMARY KEY,
+    token_hash     VARCHAR(64) NOT NULL UNIQUE,
+    admin_user_id  UUID NOT NULL REFERENCES users(id),
+    target_user_id UUID NOT NULL REFERENCES users(id),
+    reason         TEXT NOT NULL,
+    redirect_url   TEXT NOT NULL DEFAULT '',
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at     TIMESTAMPTZ NOT NULL,
+    consumed_at    TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_impersonation_grants_expires
+    ON impersonation_grants (expires_at) WHERE consumed_at IS NULL;
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

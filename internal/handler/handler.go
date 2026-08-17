@@ -138,6 +138,10 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /auth/passkeys/verify", h.handleFinishPasskeyLogin)
 	}
 
+	// Admin impersonation exchange: consumes a single-use grant token and
+	// sets an impersonated session cookie. The token is the credential.
+	mux.HandleFunc("GET /auth/impersonate/exchange", h.handleImpersonationExchange)
+
 	// Session validation for router subrequests: GET /auth/validate
 	mux.HandleFunc("GET /auth/validate", h.handleValidate)
 	mux.HandleFunc("POST /auth/validate", h.handleValidateWithTokens)
@@ -196,6 +200,8 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 		mux.HandleFunc("GET /admin/sessions", h.handleListAdminSessions)
 		mux.HandleFunc("POST /admin/sessions/{session_id}/revoke", h.handleRevokeAdminSession)
+
+		mux.HandleFunc("POST /admin/impersonation", h.handleCreateImpersonationGrant)
 	}
 }
 
@@ -213,7 +219,7 @@ func (h *Handler) handleLogout(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.authenticateRequest(w, r)
+	sess, user, ok := h.authenticateRequest(w, r)
 	if !ok {
 		return
 	}
@@ -233,6 +239,11 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		Metadata       map[string]interface{} `json:"metadata,omitempty"`
 	}
 
+	type impersonatedBy struct {
+		ID    string `json:"id"`
+		Email string `json:"email,omitempty"`
+	}
+
 	type meResponse struct {
 		ID               string                   `json:"id"`
 		Email            string                   `json:"email,omitempty"`
@@ -243,6 +254,7 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		PasskeysCount    int                      `json:"passkeys_count"`
 		Accounts         []linkedAccount          `json:"linked_accounts,omitempty"`
 		Attribution      attributionStateResponse `json:"attribution"`
+		ImpersonatedBy   *impersonatedBy          `json:"impersonated_by,omitempty"`
 	}
 
 	avatarURL, avatarPreviewURL := h.resolveAvatarURLs(r.Context(), user.AvatarStorageKey, user.AvatarPreviewStorageKey, user.AvatarURL)
@@ -254,6 +266,12 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 		AvatarURL:        avatarURL,
 		AvatarPreviewURL: avatarPreviewURL,
 		Attribution:      attributionStateResponse{},
+	}
+	if sess != nil && sess.ImpersonatorUserID != nil {
+		resp.ImpersonatedBy = &impersonatedBy{ID: sess.ImpersonatorUserID.String()}
+		if admin, err := h.store.GetUserByID(r.Context(), *sess.ImpersonatorUserID); err == nil {
+			resp.ImpersonatedBy.Email = admin.Email
+		}
 	}
 	if passkeys, err := h.store.ListPasskeysByUserID(r.Context(), user.ID); err != nil {
 		h.logger.Error("failed to fetch passkeys", "user_id", user.ID, "error", err)
@@ -324,7 +342,7 @@ func (h *Handler) handleUnlinkProvider(w http.ResponseWriter, r *http.Request) {
 // Returns 200 with X-User-ID, X-User-Email, and X-Gateway-Subject headers, or 401.
 // Does NOT set cookies (response goes to the router, not the browser).
 func (h *Handler) handleValidate(w http.ResponseWriter, r *http.Request) {
-	_, user, ok := h.resolveValidatedSession(w, r)
+	sess, user, ok := h.resolveValidatedSession(w, r)
 	if !ok {
 		return
 	}
@@ -332,5 +350,8 @@ func (h *Handler) handleValidate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-User-ID", user.ID.String())
 	w.Header().Set("X-User-Email", user.Email)
 	w.Header().Set(gatewayctx.HeaderSubject, user.ID.String())
+	if sess != nil && sess.ImpersonatorUserID != nil {
+		w.Header().Set("X-Impersonator-ID", sess.ImpersonatorUserID.String())
+	}
 	w.WriteHeader(http.StatusOK)
 }

@@ -64,6 +64,9 @@ func (h *Handler) handleValidateWithTokens(w http.ResponseWriter, r *http.Reques
 			gatewayctx.HeaderSubject: user.ID.String(),
 		},
 	}
+	if sess.ImpersonatorUserID != nil {
+		resp.Headers["X-Impersonator-ID"] = sess.ImpersonatorUserID.String()
+	}
 	if len(req.IssueTokens) == 0 {
 		httpx.WriteJSON(w, http.StatusOK, resp)
 		return

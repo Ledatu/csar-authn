@@ -269,6 +269,12 @@ func run(
 				} else if n > 0 {
 					logger.Info("session cleanup", "deleted", n)
 				}
+				n, err = st.DeleteInactiveImpersonationGrants(ctx)
+				if err != nil {
+					logger.Error("impersonation grant cleanup failed", "error", err)
+				} else if n > 0 {
+					logger.Info("impersonation grant cleanup", "deleted", n)
+				}
 			case <-ctx.Done():
 				return
 			}

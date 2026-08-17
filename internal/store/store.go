@@ -14,20 +14,21 @@ import (
 
 // Sentinel errors returned by Store implementations.
 var (
-	ErrNotFound                = errors.New("not found")
-	ErrAlreadyExists           = errors.New("already exists")
-	ErrUnverifiedEmailConflict = errors.New("email matches existing user but provider email is not verified")
-	ErrProviderAlreadyLinked   = errors.New("provider account is already linked to another user")
-	ErrPasskeyAlreadyLinked    = errors.New("passkey is already linked to a user")
-	ErrLastLoginMethod         = errors.New("cannot remove the last login method")
-	ErrMergeTokenExpired       = errors.New("merge token expired or already consumed")
-	ErrUserAlreadyMerged       = errors.New("source user has already been merged")
-	ErrSelfMerge               = errors.New("cannot merge a user into itself")
-	ErrLoginHandoffUnavailable = errors.New("login handoff is unavailable")
-	ErrAttributionUnavailable  = errors.New("attribution touch is unavailable")
-	ErrEmailOTPUnavailable     = errors.New("email OTP challenge is unavailable")
-	ErrEmailOTPInvalidCode     = errors.New("email OTP code is invalid")
-	ErrEmailOTPTooManyAttempts = errors.New("email OTP challenge exceeded maximum attempts")
+	ErrNotFound                      = errors.New("not found")
+	ErrAlreadyExists                 = errors.New("already exists")
+	ErrUnverifiedEmailConflict       = errors.New("email matches existing user but provider email is not verified")
+	ErrProviderAlreadyLinked         = errors.New("provider account is already linked to another user")
+	ErrPasskeyAlreadyLinked          = errors.New("passkey is already linked to a user")
+	ErrLastLoginMethod               = errors.New("cannot remove the last login method")
+	ErrMergeTokenExpired             = errors.New("merge token expired or already consumed")
+	ErrUserAlreadyMerged             = errors.New("source user has already been merged")
+	ErrSelfMerge                     = errors.New("cannot merge a user into itself")
+	ErrLoginHandoffUnavailable       = errors.New("login handoff is unavailable")
+	ErrAttributionUnavailable        = errors.New("attribution touch is unavailable")
+	ErrEmailOTPUnavailable           = errors.New("email OTP challenge is unavailable")
+	ErrEmailOTPInvalidCode           = errors.New("email OTP code is invalid")
+	ErrEmailOTPTooManyAttempts       = errors.New("email OTP challenge exceeded maximum attempts")
+	ErrImpersonationGrantUnavailable = errors.New("impersonation grant is unavailable")
 )
 
 // FindOrCreateResult indicates the outcome of FindOrCreateUser.
@@ -177,15 +178,33 @@ type LoginHandoff struct {
 }
 
 // Session represents a server-side session backed by the sessions table.
+// ImpersonatorUserID is set when the session was minted for a platform admin
+// acting as UserID; such sessions have a fixed expiry and never slide.
 type Session struct {
-	ID         string
-	UserID     uuid.UUID
-	CreatedAt  time.Time
-	LastSeenAt time.Time
-	ExpiresAt  time.Time
-	UserAgent  string
-	IPAddress  string
-	RevokedAt  *time.Time
+	ID                  string
+	UserID              uuid.UUID
+	CreatedAt           time.Time
+	LastSeenAt          time.Time
+	ExpiresAt           time.Time
+	UserAgent           string
+	IPAddress           string
+	RevokedAt           *time.Time
+	ImpersonatorUserID  *uuid.UUID
+	ImpersonationReason string
+}
+
+// ImpersonationGrant is a short-lived, single-use authorization for a platform
+// admin to obtain a session cookie for another user.
+type ImpersonationGrant struct {
+	ID           uuid.UUID
+	TokenHash    string
+	AdminUserID  uuid.UUID
+	TargetUserID uuid.UUID
+	Reason       string
+	RedirectURL  string
+	CreatedAt    time.Time
+	ExpiresAt    time.Time
+	ConsumedAt   *time.Time
 }
 
 // AdminSessionListParams configures pagination and filters for platform-admin session listing.
@@ -197,10 +216,12 @@ type AdminSessionListParams struct {
 	Offset int
 }
 
-// AdminSessionRow is a session joined with the owning user's email.
+// AdminSessionRow is a session joined with the owning user's email and,
+// for impersonation sessions, the impersonating admin's email.
 type AdminSessionRow struct {
 	Session
-	UserEmail string
+	UserEmail         string
+	ImpersonatorEmail string
 }
 
 // UserSearchParams configures a bounded admin user lookup.
@@ -408,6 +429,19 @@ type Store interface {
 	// SearchUsers returns bounded browser-safe user summaries for admin lookup flows.
 	// Implementations should exclude merged users and respect the requested limit.
 	SearchUsers(ctx context.Context, params UserSearchParams) ([]UserSearchResult, error)
+
+	// --- Impersonation ---
+
+	// CreateImpersonationGrant stores a new single-use impersonation grant.
+	CreateImpersonationGrant(ctx context.Context, grant *ImpersonationGrant) error
+
+	// ConsumeImpersonationGrant atomically consumes an unexpired, unconsumed
+	// grant matched by token hash. Returns ErrImpersonationGrantUnavailable if
+	// the grant is missing, expired, or already consumed.
+	ConsumeImpersonationGrant(ctx context.Context, tokenHash string) (*ImpersonationGrant, error)
+
+	// DeleteInactiveImpersonationGrants removes expired or consumed grants.
+	DeleteInactiveImpersonationGrants(ctx context.Context) (int64, error)
 
 	// --- Attribution ---
 

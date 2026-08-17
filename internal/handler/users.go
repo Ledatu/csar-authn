@@ -83,9 +83,9 @@ func (h *Handler) requireAdminUserLookupPermission(r *http.Request, subject stri
 }
 
 func (h *Handler) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 	if apiErr := h.requireAdminUserLookupPermission(r, subject); apiErr != nil {

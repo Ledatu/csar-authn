@@ -50,17 +50,20 @@ func (h *Handler) requireSessionsPermission(r *http.Request, subject, action str
 }
 
 type sessionListItem struct {
-	SessionID  string `json:"session_id"`
-	UserID     string `json:"user_id"`
-	Email      string `json:"email,omitempty"`
-	CreatedAt  int64  `json:"created_at"`
-	LastSeenAt int64  `json:"last_seen_at"`
-	ExpiresAt  int64  `json:"expires_at"`
-	UserAgent  string `json:"user_agent"`
-	IPAddress  string `json:"ip_address"`
-	RevokedAt  *int64 `json:"revoked_at,omitempty"`
-	IsActive   bool   `json:"is_active"`
-	IsCurrent  bool   `json:"is_current,omitempty"`
+	SessionID           string `json:"session_id"`
+	UserID              string `json:"user_id"`
+	Email               string `json:"email,omitempty"`
+	CreatedAt           int64  `json:"created_at"`
+	LastSeenAt          int64  `json:"last_seen_at"`
+	ExpiresAt           int64  `json:"expires_at"`
+	UserAgent           string `json:"user_agent"`
+	IPAddress           string `json:"ip_address"`
+	RevokedAt           *int64 `json:"revoked_at,omitempty"`
+	IsActive            bool   `json:"is_active"`
+	IsCurrent           bool   `json:"is_current,omitempty"`
+	ImpersonatorUserID  string `json:"impersonator_user_id,omitempty"`
+	ImpersonatorEmail   string `json:"impersonator_email,omitempty"`
+	ImpersonationReason string `json:"impersonation_reason,omitempty"`
 }
 
 type sessionListResponse struct {
@@ -93,6 +96,10 @@ func sessionToItem(sess store.Session, email string, now time.Time, currentSessi
 	}
 	if currentSessionID != "" && sess.ID == currentSessionID {
 		item.IsCurrent = true
+	}
+	if sess.ImpersonatorUserID != nil {
+		item.ImpersonatorUserID = sess.ImpersonatorUserID.String()
+		item.ImpersonationReason = sess.ImpersonationReason
 	}
 	if sess.RevokedAt != nil {
 		ts := sess.RevokedAt.Unix()
@@ -146,9 +153,9 @@ func (h *Handler) findUserSessionBySafeID(ctx context.Context, userID uuid.UUID,
 }
 
 func (h *Handler) handleListAdminSessions(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 	if apiErr := h.requireSessionsReadPermission(r, subject); apiErr != nil {
@@ -228,16 +235,18 @@ func (h *Handler) handleListAdminSessions(w http.ResponseWriter, r *http.Request
 	now := time.Now().UTC()
 	out := make([]sessionListItem, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, sessionToItem(row.Session, row.UserEmail, now, ""))
+		item := sessionToItem(row.Session, row.UserEmail, now, "")
+		item.ImpersonatorEmail = row.ImpersonatorEmail
+		out = append(out, item)
 	}
 
 	writeSessionListResponse(w, out, limit, offset, hasMore)
 }
 
 func (h *Handler) handleRevokeAdminSession(w http.ResponseWriter, r *http.Request) {
-	subject := h.extractSubject(r)
-	if subject == "" {
-		http.Error(w, "not authenticated", http.StatusUnauthorized)
+	subject, apiErr := h.adminAuth(r)
+	if apiErr != nil {
+		apiErr.Write(w)
 		return
 	}
 	if apiErr := h.requireSessionsRevokePermission(r, subject); apiErr != nil {
