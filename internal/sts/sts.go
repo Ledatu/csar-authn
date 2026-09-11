@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,7 +23,20 @@ import (
 	"github.com/ledatu/csar-core/jwtx"
 )
 
-const clockSkew = 30 * time.Second
+const (
+	clockSkew = 30 * time.Second
+
+	// DefaultAccountCacheTTL bounds how long a DB-backed service account is
+	// served without re-reading its row, i.e. the worst-case propagation
+	// delay of a revoke or key rotation to replicas that did not serve it.
+	DefaultAccountCacheTTL = time.Minute
+
+	// DefaultNegativeCacheTTL bounds how often an unknown or revoked issuer
+	// name can trigger a store lookup.
+	DefaultNegativeCacheTTL = 30 * time.Second
+)
+
+var errUnknownServiceAccount = errors.New("unknown service account")
 
 // serviceAccount holds a loaded service account's public key and permissions.
 type serviceAccount struct {
@@ -31,11 +45,20 @@ type serviceAccount struct {
 	AllowedAudiences  map[string]bool // set of allowed audience strings
 	AllowAllAudiences bool            // when true, omitting audience param returns all allowed
 	TokenTTL          time.Duration   // 0 means use default
+
+	// loadedAt is when the entry was read from the database. Zero marks a
+	// config-backed entry, which is never refreshed or evicted by lookups.
+	loadedAt time.Time
 }
 
-// ServiceAccountLister loads active service accounts from the database.
+func (sa *serviceAccount) fromConfig() bool { return sa.loadedAt.IsZero() }
+
+// ServiceAccountLister reads service accounts from the database.
 type ServiceAccountLister interface {
 	ListActiveServiceAccounts(ctx context.Context) ([]store.ServiceAccount, error)
+	// GetServiceAccount returns a service account by name regardless of
+	// status; store.ErrNotFound when no such row exists.
+	GetServiceAccount(ctx context.Context, name string) (*store.ServiceAccount, error)
 }
 
 // BootstrapAccount mirrors authnconfig.BootstrapAccount without importing
@@ -49,11 +72,21 @@ type BootstrapAccount struct {
 }
 
 // Handler handles STS token exchange requests (POST /sts/token).
-// Fields guarded by mu (accounts, assertionMaxAge) may be swapped at
-// runtime via Reload without restarting the service.
+//
+// Service accounts are cached in memory. Config-backed (bootstrap) entries
+// are static and always win by name. DB-backed entries are loaded on first
+// use and re-read from the store once older than accountCacheTTL, so
+// creates, rotations and revokes made through any replica become visible on
+// every replica without cross-replica propagation. Reload still rebuilds the
+// whole cache eagerly for the replica that served an admin mutation and for
+// config changes.
+//
+// Fields guarded by mu may be swapped at runtime via Reload without
+// restarting the service.
 type Handler struct {
 	mu              sync.RWMutex
 	accounts        map[string]*serviceAccount // keyed by SA name
+	negative        map[string]time.Time       // unknown/revoked SA name -> expiry
 	assertionMaxAge time.Duration
 
 	saLister          ServiceAccountLister
@@ -62,6 +95,9 @@ type Handler struct {
 	replayStore       ReplayStore
 	defaultTTL        time.Duration // from jwt.ttl
 	issuer            string        // expected "aud" in incoming assertions
+	accountCacheTTL   time.Duration
+	negativeCacheTTL  time.Duration
+	now               func() time.Time
 	logger            *slog.Logger
 }
 
@@ -69,7 +105,7 @@ type Handler struct {
 // and merging in any bootstrap accounts from config (config wins by name).
 // If replayStore is nil, a local in-memory replay store is used as fallback.
 func New(ctx context.Context, saLister ServiceAccountLister, bootstrap []BootstrapAccount, assertionMaxAge, defaultTTL time.Duration, issuer string, sessionMgr *session.Manager, replayStore ReplayStore, logger *slog.Logger) (*Handler, error) {
-	accounts, err := buildAccounts(ctx, saLister, bootstrap, logger)
+	accounts, err := buildAccounts(ctx, saLister, bootstrap, time.Now(), logger)
 	if err != nil {
 		return nil, err
 	}
@@ -81,6 +117,7 @@ func New(ctx context.Context, saLister ServiceAccountLister, bootstrap []Bootstr
 
 	return &Handler{
 		accounts:          accounts,
+		negative:          make(map[string]time.Time),
 		assertionMaxAge:   assertionMaxAge,
 		saLister:          saLister,
 		bootstrapAccounts: bootstrap,
@@ -88,21 +125,26 @@ func New(ctx context.Context, saLister ServiceAccountLister, bootstrap []Bootstr
 		replayStore:       replayStore,
 		defaultTTL:        defaultTTL,
 		issuer:            issuer,
+		accountCacheTTL:   DefaultAccountCacheTTL,
+		negativeCacheTTL:  DefaultNegativeCacheTTL,
+		now:               time.Now,
 		logger:            logger,
 	}, nil
 }
 
 // Reload atomically replaces service accounts from the database,
-// re-merging bootstrap accounts from config (config wins by name).
+// re-merging bootstrap accounts from config (config wins by name), and
+// drops the negative cache so a freshly created account is usable at once.
 // On error the previous accounts remain active.
 func (h *Handler) Reload(ctx context.Context) error {
-	accounts, err := buildAccounts(ctx, h.saLister, h.bootstrapAccounts, h.logger)
+	accounts, err := buildAccounts(ctx, h.saLister, h.bootstrapAccounts, h.clock(), h.logger)
 	if err != nil {
 		return err
 	}
 
 	h.mu.Lock()
 	h.accounts = accounts
+	h.negative = make(map[string]time.Time)
 	h.mu.Unlock()
 	return nil
 }
@@ -114,9 +156,30 @@ func (h *Handler) SetAssertionMaxAge(d time.Duration) {
 	h.mu.Unlock()
 }
 
+// SetCacheTTLs overrides how long DB-backed accounts are served before being
+// re-read (account) and how long unknown/revoked names are remembered
+// (negative). Non-positive values keep the current setting.
+func (h *Handler) SetCacheTTLs(account, negative time.Duration) {
+	h.mu.Lock()
+	if account > 0 {
+		h.accountCacheTTL = account
+	}
+	if negative > 0 {
+		h.negativeCacheTTL = negative
+	}
+	h.mu.Unlock()
+}
+
+func (h *Handler) clock() time.Time {
+	if h.now == nil {
+		return time.Now()
+	}
+	return h.now()
+}
+
 // buildAccounts loads active service accounts from the database, then
 // overlays bootstrap accounts from config. Config entries win by name.
-func buildAccounts(ctx context.Context, lister ServiceAccountLister, bootstrap []BootstrapAccount, logger *slog.Logger) (map[string]*serviceAccount, error) {
+func buildAccounts(ctx context.Context, lister ServiceAccountLister, bootstrap []BootstrapAccount, now time.Time, logger *slog.Logger) (map[string]*serviceAccount, error) {
 	records, err := lister.ListActiveServiceAccounts(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("listing service accounts: %w", err)
@@ -124,65 +187,137 @@ func buildAccounts(ctx context.Context, lister ServiceAccountLister, bootstrap [
 
 	accounts := make(map[string]*serviceAccount, len(records)+len(bootstrap))
 	for _, rec := range records {
-		pubKey, err := parsePublicKeyPEM([]byte(rec.PublicKeyPEM))
-		if err != nil {
-			return nil, fmt.Errorf("loading public key for SA %q: %w", rec.Name, err)
-		}
-
-		alg, err := jwtx.DetectAlgorithm(pubKey)
+		sa, err := newServiceAccount(rec.PublicKeyPEM, rec.AllowedAudiences, rec.AllowAllAudiences, rec.TokenTTL, now)
 		if err != nil {
 			return nil, fmt.Errorf("SA %q: %w", rec.Name, err)
 		}
-
-		audSet := make(map[string]bool, len(rec.AllowedAudiences))
-		for _, a := range rec.AllowedAudiences {
-			audSet[a] = true
-		}
-
-		accounts[rec.Name] = &serviceAccount{
-			PublicKey:         pubKey,
-			Algorithm:         alg,
-			AllowedAudiences:  audSet,
-			AllowAllAudiences: rec.AllowAllAudiences,
-			TokenTTL:          rec.TokenTTL,
-		}
-		logger.Info("loaded STS service account",
-			"name", rec.Name,
-			"source", "database",
-			"algorithm", alg,
-			"audiences", rec.AllowedAudiences,
-		)
+		accounts[rec.Name] = sa
+		logLoadedAccount(logger, rec.Name, "database", sa)
 	}
 
 	for _, ba := range bootstrap {
-		pubKey, err := parsePublicKeyPEM([]byte(ba.PublicKeyPEM))
-		if err != nil {
-			return nil, fmt.Errorf("loading bootstrap SA %q public key: %w", ba.Name, err)
-		}
-		alg, err := jwtx.DetectAlgorithm(pubKey)
+		sa, err := newServiceAccount(ba.PublicKeyPEM, ba.AllowedAudiences, ba.AllowAllAudiences, ba.TokenTTL, time.Time{})
 		if err != nil {
 			return nil, fmt.Errorf("bootstrap SA %q: %w", ba.Name, err)
 		}
-		audSet := make(map[string]bool, len(ba.AllowedAudiences))
-		for _, a := range ba.AllowedAudiences {
-			audSet[a] = true
-		}
-		accounts[ba.Name] = &serviceAccount{
-			PublicKey:         pubKey,
-			Algorithm:         alg,
-			AllowedAudiences:  audSet,
-			AllowAllAudiences: ba.AllowAllAudiences,
-			TokenTTL:          ba.TokenTTL,
-		}
-		logger.Info("loaded STS service account",
-			"name", ba.Name,
-			"source", "config",
-			"algorithm", alg,
-			"audiences", ba.AllowedAudiences,
-		)
+		accounts[ba.Name] = sa
+		logLoadedAccount(logger, ba.Name, "config", sa)
 	}
 
 	return accounts, nil
+}
+
+func newServiceAccount(publicKeyPEM string, allowedAudiences []string, allowAll bool, tokenTTL time.Duration, loadedAt time.Time) (*serviceAccount, error) {
+	pubKey, err := parsePublicKeyPEM([]byte(publicKeyPEM))
+	if err != nil {
+		return nil, fmt.Errorf("loading public key: %w", err)
+	}
+	alg, err := jwtx.DetectAlgorithm(pubKey)
+	if err != nil {
+		return nil, err
+	}
+	audSet := make(map[string]bool, len(allowedAudiences))
+	for _, a := range allowedAudiences {
+		audSet[a] = true
+	}
+	return &serviceAccount{
+		PublicKey:         pubKey,
+		Algorithm:         alg,
+		AllowedAudiences:  audSet,
+		AllowAllAudiences: allowAll,
+		TokenTTL:          tokenTTL,
+		loadedAt:          loadedAt,
+	}, nil
+}
+
+func logLoadedAccount(logger *slog.Logger, name, source string, sa *serviceAccount) {
+	audiences := make([]string, 0, len(sa.AllowedAudiences))
+	for a := range sa.AllowedAudiences {
+		audiences = append(audiences, a)
+	}
+	logger.Info("loaded STS service account",
+		"name", name,
+		"source", source,
+		"algorithm", sa.Algorithm,
+		"audiences", audiences,
+	)
+}
+
+// resolveAccount returns the service account for name, reading the store on
+// a cache miss or when a DB-backed entry is older than accountCacheTTL.
+// Unknown, revoked and unparseable rows are evicted and negatively cached.
+//
+// A store failure never rejects a caller that has a cached entry: the stale
+// entry keeps being served (revokes propagate once the store is back). With
+// nothing cached the failure is returned so the caller can answer 503 —
+// a 401 would make a store outage indistinguishable from a bad key to the
+// client and could make it abandon a valid credential.
+func (h *Handler) resolveAccount(ctx context.Context, name string) (*serviceAccount, error) {
+	now := h.clock()
+
+	h.mu.RLock()
+	sa, cached := h.accounts[name]
+	negativeUntil, negated := h.negative[name]
+	accountCacheTTL := h.accountCacheTTL
+	h.mu.RUnlock()
+
+	if cached && (sa.fromConfig() || now.Sub(sa.loadedAt) < accountCacheTTL) {
+		return sa, nil
+	}
+	if !cached && negated && now.Before(negativeUntil) {
+		return nil, errUnknownServiceAccount
+	}
+
+	rec, err := h.saLister.GetServiceAccount(ctx, name)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		if cached {
+			h.logger.Warn("service account refresh failed; serving cached entry", "sa", name, "error", err)
+			return sa, nil
+		}
+		return nil, fmt.Errorf("loading service account %q: %w", name, err)
+	}
+	if err != nil || rec.Status != "active" {
+		h.forget(name, now)
+		return nil, errUnknownServiceAccount
+	}
+
+	fresh, err := newServiceAccount(rec.PublicKeyPEM, rec.AllowedAudiences, rec.AllowAllAudiences, rec.TokenTTL, now)
+	if err != nil {
+		h.logger.Error("service account row is unusable", "sa", name, "error", err)
+		h.forget(name, now)
+		return nil, errUnknownServiceAccount
+	}
+
+	h.mu.Lock()
+	if existing, ok := h.accounts[name]; ok && existing.fromConfig() {
+		fresh = existing
+	} else {
+		h.accounts[name] = fresh
+	}
+	delete(h.negative, name)
+	h.mu.Unlock()
+
+	if !cached {
+		logLoadedAccount(h.logger, name, "database", fresh)
+	}
+	return fresh, nil
+}
+
+// forget evicts a DB-backed entry and remembers the name as unusable until
+// now+negativeCacheTTL, dropping expired negative entries on the way so the
+// map stays bounded by the rate of bogus issuers.
+func (h *Handler) forget(name string, now time.Time) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if existing, ok := h.accounts[name]; ok && !existing.fromConfig() {
+		delete(h.accounts, name)
+	}
+	for n, until := range h.negative {
+		if !until.After(now) {
+			delete(h.negative, n)
+		}
+	}
+	h.negative[name] = now.Add(h.negativeCacheTTL)
 }
 
 // ServeHTTP handles POST /sts/token requests.
@@ -217,15 +352,19 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Snapshot mutable fields under read lock.
 	h.mu.RLock()
-	sa, ok := h.accounts[issuer]
 	assertionMaxAge := h.assertionMaxAge
 	h.mu.RUnlock()
 
-	if !ok {
+	sa, err := h.resolveAccount(r.Context(), issuer)
+	if errors.Is(err, errUnknownServiceAccount) {
 		h.logger.Warn("unknown service account", "sa", issuer)
 		writeError(w, http.StatusUnauthorized, "invalid_grant", "authentication failed")
+		return
+	}
+	if err != nil {
+		h.logger.Error("service account lookup failed", "sa", issuer, "error", err)
+		writeError(w, http.StatusServiceUnavailable, "server_error", "service account lookup failed")
 		return
 	}
 
