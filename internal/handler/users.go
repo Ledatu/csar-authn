@@ -30,11 +30,16 @@ const (
 	avatarResolveConcurrency = 8
 )
 
+// aurumProvider resolves ids that are authn user UUIDs themselves (audit trails
+// store the canonical id, not a linked account).
+const aurumProvider = "aurum"
+
 // browserResolvableProviders restricts directory lookups to providers the seller
 // UI actually renders. Without this the endpoint becomes a generic identity
 // oracle over every linked OAuth account.
 var browserResolvableProviders = map[string]struct{}{
-	"telegram": {},
+	"telegram":    {},
+	aurumProvider: {},
 }
 
 type adminUserListItem struct {
@@ -267,6 +272,11 @@ func (h *Handler) handleResolveBrowserUsers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	if provider == aurumProvider {
+		h.resolveBrowserUsersByID(w, r, req.IDs)
+		return
+	}
+
 	ids := dedupeProviderUserIDs(req.IDs)
 	if len(ids) == 0 {
 		writeBrowserUsers(w, []browserUserItem{})
@@ -281,6 +291,33 @@ func (h *Handler) handleResolveBrowserUsers(w http.ResponseWriter, r *http.Reque
 	}
 
 	writeBrowserUsers(w, h.browserUserItems(r.Context(), provider, users))
+}
+
+func (h *Handler) resolveBrowserUsersByID(w http.ResponseWriter, r *http.Request, rawIDs []string) {
+	ids := dedupeValidUserIDs(rawIDs, maxBrowserUserResolveIDs)
+	if len(ids) == 0 {
+		writeBrowserUsers(w, []browserUserItem{})
+		return
+	}
+
+	resolved, err := h.store.GetUsersByIDs(r.Context(), ids)
+	if err != nil {
+		h.logger.Error("failed to resolve browser users", "provider", aurumProvider, "error", err)
+		apierror.New("internal_error", http.StatusInternalServerError, "failed to resolve users").Write(w)
+		return
+	}
+
+	users := make([]store.ProviderUser, 0, len(resolved))
+	for i := range resolved {
+		// Echo the requested id as provider_user_id so clients key by what they sent,
+		// even when the account was merged into another user.
+		users = append(users, store.ProviderUser{
+			User:           resolved[i].User,
+			ProviderUserID: resolved[i].RequestedID.String(),
+		})
+	}
+
+	writeBrowserUsers(w, h.browserUserItems(r.Context(), aurumProvider, users))
 }
 
 func (h *Handler) handleLookupBrowserUser(w http.ResponseWriter, r *http.Request) {

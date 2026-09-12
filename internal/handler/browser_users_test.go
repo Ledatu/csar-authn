@@ -167,6 +167,54 @@ func TestResolveBrowserUsers_FollowsMerge(t *testing.T) {
 	}
 }
 
+func TestResolveBrowserUsers_ByAurumID(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
+	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
+
+	canonical := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+	merged := uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+	st.SeedUser(&store.User{ID: canonical, DisplayName: "Canonical Name", Email: "leak@test.com"})
+	st.SeedUser(&store.User{ID: merged, DisplayName: "Stale Name", MergedInto: &canonical})
+
+	rec := postBrowser(t, h, token, "/auth/users/resolve", browserUserResolveRequest{
+		Provider: "aurum",
+		IDs:      []string{canonical.String(), merged.String(), "not-a-uuid", "cccccccc-cccc-4ccc-8ccc-cccccccccccc"},
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
+	}
+
+	resp := decodeResolve(t, rec)
+	// Malformed and unknown ids are omitted, not nulled.
+	if len(resp.Users) != 2 {
+		t.Fatalf("got %d users, want 2: %+v", len(resp.Users), resp.Users)
+	}
+
+	byRequested := map[string]browserUserItem{}
+	for _, u := range resp.Users {
+		byRequested[u.ProviderUserID] = u
+	}
+	if got := byRequested[canonical.String()]; got.DisplayName != "Canonical Name" || got.Provider != "aurum" || got.ID != canonical.String() {
+		t.Errorf("canonical item = %+v", got)
+	}
+	// The merged id is echoed as requested but resolves to the canonical user.
+	if got := byRequested[merged.String()]; got.ID != canonical.String() || got.DisplayName != "Canonical Name" {
+		t.Errorf("merged item = %+v, want canonical user", got)
+	}
+
+	var raw struct {
+		Users []map[string]any `json:"users"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatal(err)
+	}
+	for _, u := range raw.Users {
+		if _, present := u["email"]; present {
+			t.Errorf("response leaks email: %v", u)
+		}
+	}
+}
+
 func TestResolveBrowserUsers_RejectsOverCapAndBadProvider(t *testing.T) {
 	h, st, _ := newSessionsHandler(t, nil)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
