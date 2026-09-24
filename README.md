@@ -19,7 +19,6 @@ A standalone OAuth authentication service for the [**csar**](https://github.com/
 | `GET` | `/auth/{provider}` | Initiate OAuth login (`provider`: `google`, `github`, `discord`) |
 | `GET` | `/auth/{provider}/callback` | OAuth callback; sets session cookie on success |
 | `POST` | `/auth/logout` | Clear the session cookie |
-| `POST` | `/auth/legacy/telegram/session` | Temporary migration-only exchange from legacy Telegram JWT to session cookie |
 | `GET` | `/auth/me` | Return the current user's profile and linked accounts |
 | `GET` | `/.well-known/jwks.json` | Public key set for JWT verification |
 | `GET` | `/health` | Health check (`{"status":"ok"}`) |
@@ -90,29 +89,6 @@ cookie:
 ```
 
 Sensitive values can be passed via environment variables using `${VAR_NAME}` syntax in the YAML file.
-
-### Temporary Legacy Telegram JWT Migration
-
-During a one-time portal migration, `POST /auth/legacy/telegram/session` can be enabled to exchange old HS256 JWTs for normal server-side sessions. The endpoint expects JSON:
-
-```json
-{ "token": "<legacy-jwt>" }
-```
-
-The legacy token must contain an `id` claim such as `416663223`; `csar-authn` resolves it as the Telegram OAuth account `provider_user_id`, creates an opaque session, and sets the configured session cookie. Tokens produced by `jsonwebtoken.sign({ id, username }, secret)` are supported: `exp` is honored when present, but is not required; tokens without `exp` are bounded by `max_token_age` from `iat`.
-
-If the Telegram OAuth account is not yet present, the endpoint creates a sparse authn user and links the Telegram provider account. The sparse user intentionally has no email, phone, or avatar. When the token has a Telegram-safe `username`, the user and provider display name are initialized to `@username`, and the raw username is recorded as `provider_metadata.legacy_username`. Later OAuth linking or profile updates can enrich the account with verified user data.
-
-```yaml
-legacy_login:
-  telegram_jwt:
-    enabled: true
-    hmac_secret: "${LEGACY_TELEGRAM_JWT_SECRET}"
-    max_token_age: "720h"
-    endpoint_enabled_until: "2026-08-01T00:00:00Z"
-```
-
-Remove this config block and the router route after the legacy portal cutover.
 
 ### Running
 
