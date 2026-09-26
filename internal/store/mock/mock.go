@@ -30,6 +30,8 @@ type Store struct {
 	emailOTPChallenges  map[uuid.UUID]*store.EmailOTPChallenge
 	loginHandoffs       map[uuid.UUID]*store.LoginHandoff
 	impersonationGrants map[string]*store.ImpersonationGrant // key: token_hash
+
+	legacyUsersSyncLocked bool
 }
 
 // New returns a new mock Store.

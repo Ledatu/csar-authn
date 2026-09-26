@@ -90,7 +90,7 @@ func TestLegacyUsersSync_Rejections(t *testing.T) {
 		{"disabled", false, legacyUsersSyncSubject, "?dry_run=true", valid, http.StatusNotFound},
 		{"no subject", true, "", "?dry_run=true", valid, http.StatusForbidden},
 		{"other service", true, "svc:aurumskynet-campaigns", "?dry_run=true", valid, http.StatusForbidden},
-		{"apply", true, legacyUsersSyncSubject, "?dry_run=false", valid, http.StatusBadRequest},
+		{"apply while disabled", true, legacyUsersSyncSubject, "?dry_run=false&actions=link", valid, http.StatusForbidden},
 		{"no mode", true, legacyUsersSyncSubject, "", valid, http.StatusBadRequest},
 		{"bad json", true, legacyUsersSyncSubject, "?dry_run=true", `{`, http.StatusBadRequest},
 		{"empty users", true, legacyUsersSyncSubject, "?dry_run=true", legacyUsersSyncBody(`[]`), http.StatusBadRequest},
@@ -102,5 +102,36 @@ func TestLegacyUsersSync_Rejections(t *testing.T) {
 				t.Fatalf("status = %d, want %d: %s", w.Code, tc.want, w.Body.String())
 			}
 		})
+	}
+}
+
+func TestLegacyUsersSync_ApplyWritesOnlyAllowedActions(t *testing.T) {
+	h, post := newLegacyUsersSyncHandler(t, true)
+	cfg := *h.Config()
+	cfg.LegacyUsersSync.Apply = authnconfig.LegacyUsersSyncApplyConfig{Enabled: true, Actions: []string{"link"}, MaxLinks: 5, MaxCreates: 5}
+	h.SetConfig(&cfg)
+	audits := h.auditRecorder.(*mockAuditRecorder)
+
+	body := legacyUsersSyncBody(`[
+		{"legacy_id":111,"telegram_id":"111","yandex_id":"ya-1"},
+		{"legacy_id":222,"telegram_id":"222"}
+	]`)
+	if w := post(legacyUsersSyncSubject, "?dry_run=false&actions=create", body); w.Code != http.StatusBadRequest {
+		t.Fatalf("create while only link is allowed: status = %d, want 400", w.Code)
+	}
+
+	w := post(legacyUsersSyncSubject, "?dry_run=false&actions=link,create", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var report legacysync.Report
+	if err := json.Unmarshal(w.Body.Bytes(), &report); err != nil {
+		t.Fatal(err)
+	}
+	if report.DryRun || report.Applied == nil || *report.Applied != (legacysync.ApplySummary{Linked: 1}) {
+		t.Fatalf("report = %+v", report)
+	}
+	if got := audits.Events(); len(got) != 1 || got[0].Action != "user.legacy_sync.link" || got[0].Actor != legacyUsersSyncSubject {
+		t.Fatalf("audit events = %+v", got)
 	}
 }

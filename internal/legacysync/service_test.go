@@ -125,3 +125,135 @@ func TestPhoneVariants(t *testing.T) {
 		t.Fatalf("short number variants = %v, want none", got)
 	}
 }
+
+func newApplyFixture(t *testing.T) (*Service, *mock.Store, time.Time) {
+	t.Helper()
+	st := mock.New()
+	seedLinkedUser(t, st, &store.User{ID: alice}, map[string]string{ProviderTelegram: "111"})
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	svc := NewService(st)
+	svc.now = func() time.Time { return now }
+	return svc, st, now
+}
+
+func TestServiceApply_LinksAndCreatesWithoutContactData(t *testing.T) {
+	svc, st, now := newApplyFixture(t)
+	req := &Request{GeneratedAt: now, Users: []LegacyUser{
+		{LegacyID: 111, TelegramID: "111", YandexID: "ya-alice"},
+		{LegacyID: 555, TelegramID: "555", YandexID: "ya-new", FirstName: " Anna ", LastName: "Petrova", Username: "anna",
+			PhotoURL: "https://t.me/i/userpic/320/a.jpg", Email: "anna@example.com", Phone: "+79990001122"},
+	}}
+
+	report, err := svc.Apply(context.Background(), req, Options{MaxUsers: 10}, ApplyOptions{
+		Actions: []Action{ActionLink, ActionCreate}, MaxLinks: 5, MaxCreates: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.DryRun || *report.Applied != (ApplySummary{Linked: 1, Created: 1}) {
+		t.Fatalf("report = %+v applied %+v", report, report.Applied)
+	}
+
+	ctx := context.Background()
+	linked, err := st.GetOAuthAccount(ctx, ProviderYandex, "ya-alice")
+	if err != nil || linked.UserID != alice || linked.Email != "" || linked.EmailVerified {
+		t.Fatalf("yandex link = %+v, %v", linked, err)
+	}
+	tg, err := st.GetOAuthAccount(ctx, ProviderTelegram, "555")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tg.ProviderMetadata["legacy_username"] != "anna" || tg.ProviderMetadata["linked_by"] != "legacy_sync" {
+		t.Fatalf("telegram metadata = %v", tg.ProviderMetadata)
+	}
+	created, err := st.GetUserByID(ctx, tg.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.DisplayName != "Anna Petrova" || created.AvatarURL != "https://t.me/i/userpic/320/a.jpg" || created.Email != "" || created.Phone != "" {
+		t.Fatalf("created user = %+v", created)
+	}
+	ya, err := st.GetOAuthAccount(ctx, ProviderYandex, "ya-new")
+	if err != nil || ya.UserID != created.ID {
+		t.Fatalf("created yandex link = %+v, %v", ya, err)
+	}
+}
+
+func TestServiceApply_RefusesAnActionOverItsCap(t *testing.T) {
+	svc, st, now := newApplyFixture(t)
+	req := &Request{GeneratedAt: now, Users: []LegacyUser{
+		{LegacyID: 111, TelegramID: "111", YandexID: "ya-alice"},
+		{LegacyID: 555, TelegramID: "555"},
+	}}
+
+	report, err := svc.Apply(context.Background(), req, Options{MaxUsers: 10}, ApplyOptions{
+		Actions: []Action{ActionLink, ActionCreate}, MaxLinks: 5, MaxCreates: 0,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Refused) != 1 || report.Refused[0] != (Refusal{Action: ActionCreate, Planned: 1, Cap: 0}) {
+		t.Fatalf("refused = %+v", report.Refused)
+	}
+	if report.Applied.Linked != 1 || report.Applied.Created != 0 {
+		t.Fatalf("applied = %+v", report.Applied)
+	}
+	if _, err := st.GetOAuthAccount(context.Background(), ProviderTelegram, "555"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("refused create still wrote a link: %v", err)
+	}
+}
+
+func TestServiceApply_OnlyRequestedActionsRun(t *testing.T) {
+	svc, st, now := newApplyFixture(t)
+	req := &Request{GeneratedAt: now, Users: []LegacyUser{
+		{LegacyID: 111, TelegramID: "111", YandexID: "ya-alice"},
+		{LegacyID: 555, TelegramID: "555"},
+	}}
+
+	report, err := svc.Apply(context.Background(), req, Options{MaxUsers: 10}, ApplyOptions{
+		Actions: []Action{ActionLink}, MaxLinks: 5, MaxCreates: 5,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if *report.Applied != (ApplySummary{Linked: 1}) {
+		t.Fatalf("applied = %+v", report.Applied)
+	}
+	if _, err := st.GetOAuthAccount(context.Background(), ProviderTelegram, "555"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("create ran without being requested: %v", err)
+	}
+}
+
+func TestServiceApply_OneRunAtATime(t *testing.T) {
+	svc, st, now := newApplyFixture(t)
+	release, ok, _ := st.TryLegacyUsersSyncLock(context.Background())
+	if !ok {
+		t.Fatal("lock not taken")
+	}
+	defer release()
+
+	_, err := svc.Apply(context.Background(), &Request{GeneratedAt: now, Users: []LegacyUser{{LegacyID: 111, TelegramID: "111"}}},
+		Options{MaxUsers: 10}, ApplyOptions{Actions: []Action{ActionLink}, MaxLinks: 5})
+	if !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("err = %v, want ErrRunInProgress", err)
+	}
+}
+
+func TestLegacyProfile(t *testing.T) {
+	cases := []struct {
+		user LegacyUser
+		name string
+		url  string
+	}{
+		{LegacyUser{FirstName: "Anna", Username: "anna"}, "Anna", ""},
+		{LegacyUser{Username: "@anna", PhotoURL: "javascript:alert(1)"}, "@anna", ""},
+		{LegacyUser{PhotoURL: "http://cdn.example/a.png"}, "", "http://cdn.example/a.png"},
+		{LegacyUser{PhotoURL: "https:///no-host"}, "", ""},
+	}
+	for _, tc := range cases {
+		got := legacyProfile(tc.user)
+		if got.DisplayName != tc.name || got.AvatarURL != tc.url || got.Email != "" || got.Phone != "" {
+			t.Fatalf("legacyProfile(%+v) = %+v", tc.user, got)
+		}
+	}
+}

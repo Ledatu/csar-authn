@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -18,11 +19,23 @@ type Store interface {
 	GetOAuthAccountsByUserID(ctx context.Context, userID uuid.UUID) ([]store.OAuthAccount, error)
 	GetUserByEmail(ctx context.Context, email string) (*store.User, error)
 	GetUserByPhone(ctx context.Context, phone string) (*store.User, error)
+	TryLegacyUsersSyncLock(ctx context.Context) (release func(), ok bool, err error)
+	LinkLegacyAccount(ctx context.Context, acct *store.OAuthAccount) error
+	CreateLegacyUser(ctx context.Context, u *store.User, accounts []store.OAuthAccount) (*store.User, error)
 }
+
+var ErrRunInProgress = errors.New("a legacy users sync apply run is already in progress")
 
 type Options struct {
 	MaxUsers  int
 	Overrides map[int64]string
+}
+
+// ApplyOptions lists the actions a run may write and their per-run caps.
+type ApplyOptions struct {
+	Actions    []Action
+	MaxLinks   int
+	MaxCreates int
 }
 
 type Service struct {
@@ -36,6 +49,57 @@ func NewService(st Store) *Service {
 
 // DryRun plans every legacy user without writing anything.
 func (s *Service) DryRun(ctx context.Context, req *Request, opts Options) (*Report, error) {
+	plans, err := s.plan(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	return buildReport(req.GeneratedAt, plans), nil
+}
+
+// Apply re-plans against fresh authn state and writes the planned links and
+// users of the allowed actions. An action whose planned count exceeds its cap
+// is refused whole. Writes never touch email, phone, sessions or merges.
+func (s *Service) Apply(ctx context.Context, req *Request, opts Options, apply ApplyOptions) (*Report, error) {
+	if err := req.Validate(s.now(), opts.MaxUsers); err != nil {
+		return nil, err
+	}
+	release, ok, err := s.store.TryLegacyUsersSyncLock(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrRunInProgress
+	}
+	defer release()
+
+	plans, err := s.plan(ctx, req, opts)
+	if err != nil {
+		return nil, err
+	}
+	active, refused := activeActions(plans, apply)
+
+	users := make(map[int64]LegacyUser, len(req.Users))
+	for _, u := range req.Users {
+		users[u.LegacyID] = u
+	}
+	applied := &ApplySummary{}
+	for i := range plans {
+		p := &plans[i]
+		if !active[p.Action] {
+			continue
+		}
+		s.applyUser(ctx, users[p.LegacyID], p)
+		applied.count(p)
+	}
+
+	r := buildReport(req.GeneratedAt, plans)
+	r.DryRun = false
+	r.Applied = applied
+	r.Refused = refused
+	return r, nil
+}
+
+func (s *Service) plan(ctx context.Context, req *Request, opts Options) ([]UserPlan, error) {
 	if err := req.Validate(s.now(), opts.MaxUsers); err != nil {
 		return nil, err
 	}
@@ -58,7 +122,94 @@ func (s *Service) DryRun(ctx context.Context, req *Request, opts Options) (*Repo
 		}
 		plans = append(plans, p)
 	}
-	return buildReport(req.GeneratedAt, plans), nil
+	return plans, nil
+}
+
+func activeActions(plans []UserPlan, apply ApplyOptions) (map[Action]bool, []Refusal) {
+	planned := map[Action]int{}
+	for _, p := range plans {
+		planned[p.Action]++
+	}
+	caps := map[Action]int{ActionLink: apply.MaxLinks, ActionCreate: apply.MaxCreates}
+	active := map[Action]bool{}
+	var refused []Refusal
+	for _, a := range apply.Actions {
+		limit, known := caps[a]
+		switch {
+		case !known:
+			continue
+		case planned[a] > limit:
+			refused = append(refused, Refusal{Action: a, Planned: planned[a], Cap: limit})
+		default:
+			active[a] = true
+		}
+	}
+	return active, refused
+}
+
+func (s *Service) applyUser(ctx context.Context, u LegacyUser, p *UserPlan) {
+	var err error
+	switch p.Action {
+	case ActionLink:
+		var userID uuid.UUID
+		if userID, err = uuid.Parse(p.UserID); err == nil {
+			acct := legacyAccount(u, p.AddLinks[0])
+			acct.UserID = userID
+			err = s.store.LinkLegacyAccount(ctx, &acct)
+		}
+	case ActionCreate:
+		accounts := make([]store.OAuthAccount, 0, len(p.AddLinks))
+		for _, provider := range p.AddLinks {
+			accounts = append(accounts, legacyAccount(u, provider))
+		}
+		var created *store.User
+		if created, err = s.store.CreateLegacyUser(ctx, legacyProfile(u), accounts); err == nil {
+			p.UserID = created.ID.String()
+		}
+	}
+	switch {
+	case errors.Is(err, store.ErrProviderAlreadyLinked):
+		p.Applied, p.Error = AppliedFailed, "provider link was taken since the plan"
+	case err != nil:
+		p.Applied, p.Error = AppliedFailed, "write failed"
+	default:
+		p.Applied = AppliedOK
+	}
+}
+
+// legacyAccount builds a link the way a first login would, minus tokens and
+// email: the sync never vouches for an address.
+func legacyAccount(u LegacyUser, provider string) store.OAuthAccount {
+	acct := store.OAuthAccount{
+		Provider:         provider,
+		ProviderMetadata: map[string]interface{}{"linked_by": "legacy_sync"},
+	}
+	switch provider {
+	case ProviderTelegram:
+		acct.ProviderUserID = u.TelegramID
+		if u.Username != "" {
+			acct.ProviderMetadata["legacy_username"] = u.Username
+		}
+	case ProviderYandex:
+		acct.ProviderUserID = u.YandexID
+	}
+	return acct
+}
+
+func legacyProfile(u LegacyUser) *store.User {
+	name := strings.TrimSpace(strings.TrimSpace(u.FirstName) + " " + strings.TrimSpace(u.LastName))
+	if name == "" && u.Username != "" {
+		name = "@" + strings.TrimPrefix(u.Username, "@")
+	}
+	return &store.User{DisplayName: name, AvatarURL: safeAvatarURL(u.PhotoURL)}
+}
+
+func safeAvatarURL(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || len(raw) > 2048 {
+		return ""
+	}
+	return parsed.String()
 }
 
 func (s *Service) loadState(ctx context.Context, users []LegacyUser, overrides map[int64]string) (State, error) {

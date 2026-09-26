@@ -45,7 +45,14 @@ type UserPlan struct {
 	SyntheticTelegramUserID string   `json:"synthetic_telegram_user_id,omitempty"`
 	EmailTakenBy            string   `json:"email_taken_by,omitempty"`
 	PhoneTakenBy            string   `json:"phone_taken_by,omitempty"`
+	Applied                 string   `json:"applied,omitempty"`
+	Error                   string   `json:"error,omitempty"`
 }
+
+const (
+	AppliedOK     = "ok"
+	AppliedFailed = "failed"
+)
 
 func (p *UserPlan) block(flag string) {
 	p.Action = ActionBlocked
@@ -150,10 +157,36 @@ type Summary struct {
 // Report lists only the users that need attention: every plan that is not a
 // clean no-op.
 type Report struct {
-	DryRun      bool       `json:"dry_run"`
-	GeneratedAt time.Time  `json:"generated_at"`
-	Summary     Summary    `json:"summary"`
-	Users       []UserPlan `json:"users"`
+	DryRun      bool          `json:"dry_run"`
+	GeneratedAt time.Time     `json:"generated_at"`
+	Summary     Summary       `json:"summary"`
+	Applied     *ApplySummary `json:"applied,omitempty"`
+	Refused     []Refusal     `json:"refused,omitempty"`
+	Users       []UserPlan    `json:"users"`
+}
+
+type ApplySummary struct {
+	Linked  int `json:"linked"`
+	Created int `json:"created"`
+	Failed  int `json:"failed"`
+}
+
+func (a *ApplySummary) count(p *UserPlan) {
+	switch {
+	case p.Applied == AppliedFailed:
+		a.Failed++
+	case p.Action == ActionLink:
+		a.Linked++
+	case p.Action == ActionCreate:
+		a.Created++
+	}
+}
+
+// Refusal is an action whose planned count exceeded its cap; none of it ran.
+type Refusal struct {
+	Action  Action `json:"action"`
+	Planned int    `json:"planned"`
+	Cap     int    `json:"cap"`
 }
 
 func buildReport(generatedAt time.Time, plans []UserPlan) *Report {

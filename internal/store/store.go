@@ -344,6 +344,18 @@ type Store interface {
 	//  5. If no match, create user + oauth_account in a transaction
 	FindOrCreateUser(ctx context.Context, acct *OAuthAccount, email, phone, displayName, avatarURL string) (*User, FindOrCreateResult, error)
 
+	// TryLegacyUsersSyncLock takes the cross-replica lock for one legacy users
+	// sync apply run; ok is false when another run holds it.
+	TryLegacyUsersSyncLock(ctx context.Context) (release func(), ok bool, err error)
+
+	// LinkLegacyAccount adds a provider link to an existing user for the legacy
+	// sync. Returns ErrProviderAlreadyLinked if the link exists.
+	LinkLegacyAccount(ctx context.Context, acct *OAuthAccount) error
+
+	// CreateLegacyUser inserts a user with its provider links in one transaction.
+	// Returns ErrProviderAlreadyLinked if any link exists.
+	CreateLegacyUser(ctx context.Context, u *User, accounts []OAuthAccount) (*User, error)
+
 	// LinkOAuthAccount links an OAuth identity to an authenticated user.
 	// Returns ErrProviderAlreadyLinked if the provider account is linked to a different user.
 	LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *OAuthAccount) error
