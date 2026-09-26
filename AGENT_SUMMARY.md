@@ -21,6 +21,7 @@
 - Bot verification and account merge flows.
 - Optional admin permissions and service-account management.
 - `POST /svc/authn/users/resolve-links` maps Telegram/Yandex provider ids to authn user ids (mapping only, no profile data, service callers only) for the legacy identity sync.
+- `POST /svc/authn/legacy-users-sync?dry_run=true` (`internal/legacysync`) plans the legacy Mongo users into authn users and Telegram/Yandex links: noop, create, link, split_identity, overridden, blocked (email/phone already on another user, provider already linked, August synthetic Telegram rows) or no_identity. Dry run only; Mongo email and phone are compared, never stored; the report carries no profile data. Gated by `legacy_users_sync` (csar-core authnconfig: `allowed_subjects`, `max_users`, `identity_overrides`) and the router policy `authn-svc-legacy-sync`. Plan: `plans/2026-09-26-legacy-sync-apply-mode.md`.
 
 ## Dependencies
 - PostgreSQL for identity/session state.
