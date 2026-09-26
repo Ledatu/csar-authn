@@ -20,6 +20,7 @@
 - STS token exchange and replay protection.
 - Bot verification and account merge flows.
 - Optional admin permissions and service-account management.
+- `POST /svc/authn/users/resolve-links` maps Telegram/Yandex provider ids to authn user ids (mapping only, no profile data, service callers only) for the legacy identity sync.
 
 ## Dependencies
 - PostgreSQL for identity/session state.
