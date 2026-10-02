@@ -18,6 +18,9 @@
 - OAuth login and callback handling.
 - Session issuance, refresh, logout, and JWKS publication.
 - STS token exchange and replay protection.
+- Seller personal API keys: cookie-session creation/list/revocation, hashed
+  storage with a five-active-key cap and 90-day expiry, current advert-read
+  permission at creation, and mTLS-only introspection for the router.
 - Bot verification and account merge flows.
 - Optional admin permissions and service-account management.
 - `POST /svc/authn/users/resolve-links` maps Telegram/Yandex provider ids to authn user ids (mapping only, no profile data, service callers only) for the legacy identity sync.

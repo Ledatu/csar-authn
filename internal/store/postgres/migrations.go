@@ -338,6 +338,28 @@ CREATE INDEX IF NOT EXISTS idx_impersonation_grants_expires
     ON impersonation_grants (expires_at) WHERE consumed_at IS NULL;
 `,
 	},
+	{
+		Name: "019_seller_api_credentials",
+		Up: `
+CREATE TABLE IF NOT EXISTS seller_api_credentials (
+    id UUID PRIMARY KEY,
+    owner_user_id UUID NOT NULL REFERENCES users(id),
+    seller_id TEXT NOT NULL,
+    label TEXT NOT NULL,
+    token_hash CHAR(64) NOT NULL UNIQUE,
+    token_prefix TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_seller_api_credentials_owner
+  ON seller_api_credentials (owner_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_seller_api_credentials_active
+  ON seller_api_credentials (owner_user_id, expires_at)
+  WHERE revoked_at IS NULL;
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.
