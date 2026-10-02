@@ -126,6 +126,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 
 	// Current user's active sessions: GET /auth/me/sessions
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)
+	mux.HandleFunc("GET /auth/me/api-keys", h.handleListAPIKeys)
+	mux.HandleFunc("POST /auth/me/api-keys", h.handleCreateAPIKey)
+	mux.HandleFunc("DELETE /auth/me/api-keys/{key_id}", h.handleRevokeAPIKey)
 	mux.HandleFunc("POST /auth/me/sessions/revoke-others", h.handleRevokeOtherMeSessions)
 	mux.HandleFunc("POST /auth/me/sessions/{session_id}/revoke", h.handleRevokeMeSession)
 
@@ -145,6 +148,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Session validation for router subrequests: GET /auth/validate
 	mux.HandleFunc("GET /auth/validate", h.handleValidate)
 	mux.HandleFunc("POST /auth/validate", h.handleValidateWithTokens)
+	mux.HandleFunc("POST /auth/token/introspect", h.handleIntrospectAPIKey)
 
 	// Generic service-to-service attribution primitives.
 	mux.HandleFunc("POST /svc/authn/attribution/resolve", h.handleResolveServiceAttribution)
