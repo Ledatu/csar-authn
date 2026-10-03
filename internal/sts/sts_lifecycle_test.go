@@ -1,6 +1,7 @@
 package sts
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -112,6 +113,42 @@ func TestLifecycle_DBBackedSAWorks(t *testing.T) {
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLifecycle_ReloadAppliesNewBootstrapAndRejectsDBCollision(t *testing.T) {
+	h, _, _ := setupLifecycleEnv(t)
+	firstPub, _, firstPEM := generateEdDSAKeyPEM(t)
+	secondPub, _, secondPEM := generateEdDSAKeyPEM(t)
+	bootstrap := []BootstrapAccount{{
+		Name: "config-sa", PublicKeyPEM: firstPEM,
+		AllowedAudiences: []string{"aud-a"}, TokenTTL: time.Hour,
+	}}
+	if err := h.ReloadWithBootstrap(context.Background(), bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	account, err := h.resolveAccount(context.Background(), "config-sa")
+	if err != nil || !bytes.Equal(account.PublicKey.(ed25519.PublicKey), firstPub) {
+		t.Fatalf("new config key not active: %v", err)
+	}
+	bootstrap[0].PublicKeyPEM = secondPEM
+	if err := h.ReloadWithBootstrap(context.Background(), bootstrap); err != nil {
+		t.Fatal(err)
+	}
+	account, err = h.resolveAccount(context.Background(), "config-sa")
+	if err != nil || !bytes.Equal(account.PublicKey.(ed25519.PublicKey), secondPub) {
+		t.Fatalf("updated config key not active: %v", err)
+	}
+	bootstrap = append(bootstrap, BootstrapAccount{
+		Name: "lifecycle-sa", PublicKeyPEM: firstPEM,
+		AllowedAudiences: []string{"aud-a"}, TokenTTL: time.Hour,
+	})
+	if err := h.ReloadWithBootstrap(context.Background(), bootstrap); err == nil {
+		t.Fatal("new bootstrap entry must not shadow a database account")
+	}
+	account, err = h.resolveAccount(context.Background(), "config-sa")
+	if err != nil || !bytes.Equal(account.PublicKey.(ed25519.PublicKey), secondPub) {
+		t.Fatalf("failed reload changed previous config: %v", err)
 	}
 }
 
@@ -233,12 +270,7 @@ func withCountingLister(t *testing.T, h *Handler) *countingLister {
 	return cl
 }
 
-func advanceClock(h *Handler, d time.Duration) {
-	base := time.Now()
-	h.now = func() time.Time { return base.Add(d) }
-}
-
-func TestLazyLoad_MissLoadsFromStore(t *testing.T) {
+func TestLifecycle_DBAccountReadOnEveryExchange(t *testing.T) {
 	h, st, _ := setupLifecycleEnv(t)
 	cl := withCountingLister(t, h)
 
@@ -258,32 +290,24 @@ func TestLazyLoad_MissLoadsFromStore(t *testing.T) {
 	if code := exchange(t, h, newPriv, "new-sa", "lazy-2", "aud-x"); code != http.StatusOK {
 		t.Fatalf("second exchange: expected 200, got %d", code)
 	}
-	if got := cl.gets.Load(); got != 1 {
-		t.Errorf("expected exactly one store read for a fresh entry, got %d", got)
+	if got := cl.gets.Load(); got != 2 {
+		t.Errorf("expected one store read per exchange, got %d", got)
 	}
 }
 
-func TestLazyLoad_RevokedInStoreRejectedAfterTTL(t *testing.T) {
+func TestLifecycle_RevokedInStoreRejectedImmediately(t *testing.T) {
 	h, st, saPriv := setupLifecycleEnv(t)
 
 	if err := st.RevokeServiceAccount(context.Background(), "lifecycle-sa"); err != nil {
 		t.Fatal(err)
 	}
 
-	if code := exchange(t, h, saPriv, "lifecycle-sa", "rv-1", "aud-a"); code != http.StatusOK {
-		t.Fatalf("within TTL the cached entry is still served: expected 200, got %d", code)
-	}
-
-	advanceClock(h, DefaultAccountCacheTTL+time.Second)
-	if code := exchange(t, h, saPriv, "lifecycle-sa", "rv-2", "aud-a"); code != http.StatusUnauthorized {
-		t.Fatalf("after TTL revoked SA must be rejected: expected 401, got %d", code)
-	}
-	if _, cached := h.accounts["lifecycle-sa"]; cached {
-		t.Error("revoked SA should be evicted from the cache")
+	if code := exchange(t, h, saPriv, "lifecycle-sa", "rv-1", "aud-a"); code != http.StatusUnauthorized {
+		t.Fatalf("revoked SA must be rejected on next exchange: expected 401, got %d", code)
 	}
 }
 
-func TestLazyLoad_RotatedInStorePickedUpAfterTTL(t *testing.T) {
+func TestLifecycle_RotatedInStorePickedUpImmediately(t *testing.T) {
 	h, st, oldPriv := setupLifecycleEnv(t)
 	_, newPriv, newPEM := generateEdDSAKeyPEM(t)
 
@@ -291,12 +315,11 @@ func TestLazyLoad_RotatedInStorePickedUpAfterTTL(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	advanceClock(h, DefaultAccountCacheTTL+time.Second)
 	if code := exchange(t, h, oldPriv, "lifecycle-sa", "rot-old", "aud-a"); code != http.StatusUnauthorized {
-		t.Errorf("old key after TTL: expected 401, got %d", code)
+		t.Errorf("old key: expected 401, got %d", code)
 	}
 	if code := exchange(t, h, newPriv, "lifecycle-sa", "rot-new", "aud-a"); code != http.StatusOK {
-		t.Errorf("new key after TTL: expected 200, got %d", code)
+		t.Errorf("new key: expected 200, got %d", code)
 	}
 }
 
@@ -333,14 +356,13 @@ func TestLazyLoad_BootstrapWinsOverDBRow(t *testing.T) {
 		}
 	}
 	check("fresh")
-	advanceClock(h, DefaultAccountCacheTTL+time.Second)
-	check("aged")
+	check("second")
 	if got := cl.gets.Load(); got != 0 {
 		t.Errorf("bootstrap entries must never be refreshed from the store, got %d reads", got)
 	}
 }
 
-func TestLazyLoad_NegativeCache(t *testing.T) {
+func TestLifecycle_UnknownNameIsNotCached(t *testing.T) {
 	h, st, _ := setupLifecycleEnv(t)
 	cl := withCountingLister(t, h)
 	_, priv, pem := generateEdDSAKeyPEM(t)
@@ -350,8 +372,8 @@ func TestLazyLoad_NegativeCache(t *testing.T) {
 			t.Fatalf("unknown SA: expected 401, got %d", code)
 		}
 	}
-	if got := cl.gets.Load(); got != 1 {
-		t.Fatalf("unknown issuer should hit the store once, got %d reads", got)
+	if got := cl.gets.Load(); got != 3 {
+		t.Fatalf("unknown issuer should hit the store on each request, got %d reads", got)
 	}
 
 	if err := st.CreateServiceAccount(context.Background(), &store.ServiceAccount{
@@ -362,20 +384,15 @@ func TestLazyLoad_NegativeCache(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if code := exchange(t, h, priv, "ghost-sa", "neg-created", "aud-x"); code != http.StatusUnauthorized {
-		t.Fatalf("negative cache still in force: expected 401, got %d", code)
+	if code := exchange(t, h, priv, "ghost-sa", "neg-created", "aud-x"); code != http.StatusOK {
+		t.Fatalf("new SA must work on next exchange: expected 200, got %d", code)
 	}
-
-	advanceClock(h, DefaultNegativeCacheTTL+time.Second)
-	if code := exchange(t, h, priv, "ghost-sa", "neg-expired", "aud-x"); code != http.StatusOK {
-		t.Fatalf("after negative TTL the new SA must load: expected 200, got %d", code)
-	}
-	if got := cl.gets.Load(); got != 2 {
-		t.Errorf("expected 2 store reads, got %d", got)
+	if got := cl.gets.Load(); got != 4 {
+		t.Errorf("expected 4 store reads, got %d", got)
 	}
 }
 
-func TestLazyLoad_ReloadClearsNegativeCache(t *testing.T) {
+func TestLifecycle_NewAccountNeedsNoReload(t *testing.T) {
 	h, st, _ := setupLifecycleEnv(t)
 	_, priv, pem := generateEdDSAKeyPEM(t)
 
@@ -390,11 +407,8 @@ func TestLazyLoad_ReloadClearsNegativeCache(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := h.Reload(context.Background()); err != nil {
-		t.Fatal(err)
-	}
 	if code := exchange(t, h, priv, "late-sa", "rl-2", "aud-x"); code != http.StatusOK {
-		t.Fatalf("after Reload: expected 200, got %d", code)
+		t.Fatalf("after create: expected 200, got %d", code)
 	}
 }
 
@@ -412,18 +426,53 @@ func TestLazyLoad_StoreErrorOnMissIs503(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable {
 		t.Fatalf("store error on miss: expected 503, got %d: %s", w.Code, w.Body.String())
 	}
-	if _, negated := h.negative["any-sa"]; negated {
-		t.Error("a store error must not poison the negative cache")
-	}
 }
 
-func TestLazyLoad_StoreErrorKeepsStaleEntry(t *testing.T) {
+func TestLifecycle_StoreErrorFailsClosedForCachedEntry(t *testing.T) {
 	h, _, saPriv := setupLifecycleEnv(t)
 	cl := withCountingLister(t, h)
 	cl.getErr = errors.New("pg down")
 
-	advanceClock(h, DefaultAccountCacheTTL+time.Second)
-	if code := exchange(t, h, saPriv, "lifecycle-sa", "stale-1", "aud-a"); code != http.StatusOK {
-		t.Fatalf("stale entry must be served through a store outage: expected 200, got %d", code)
+	if code := exchange(t, h, saPriv, "lifecycle-sa", "stale-1", "aud-a"); code != http.StatusServiceUnavailable {
+		t.Fatalf("database account must fail closed during outage: expected 503, got %d", code)
+	}
+}
+
+func TestLifecycle_ReactivateUsesNewKeyAndAudienceWithoutReload(t *testing.T) {
+	h, st, oldPriv := setupLifecycleEnv(t)
+	if err := st.RevokeServiceAccount(context.Background(), "lifecycle-sa"); err != nil {
+		t.Fatal(err)
+	}
+	_, newPriv, newPEM := generateEdDSAKeyPEM(t)
+	reactivated, err := st.CreateOrReactivateServiceAccount(context.Background(), &store.ServiceAccount{
+		Name: "lifecycle-sa", PublicKeyPEM: newPEM,
+		AllowedAudiences: []string{"aud-b"}, TokenTTL: 15 * time.Minute,
+	})
+	if err != nil || !reactivated {
+		t.Fatalf("reactivation failed: %v, %v", reactivated, err)
+	}
+	if code := exchange(t, h, oldPriv, "lifecycle-sa", "react-old", "aud-a"); code != http.StatusUnauthorized {
+		t.Fatalf("old key should fail immediately: %d", code)
+	}
+	if code := exchange(t, h, newPriv, "lifecycle-sa", "react-new", "aud-b"); code != http.StatusOK {
+		t.Fatalf("new key and audience should work immediately: %d", code)
+	}
+}
+
+func TestLifecycle_EmptyAllowedAudienceNeverIssuesToken(t *testing.T) {
+	h, st, _ := setupLifecycleEnv(t)
+	_, priv, pemStr := generateEdDSAKeyPEM(t)
+	if err := st.CreateServiceAccount(context.Background(), &store.ServiceAccount{
+		Name: "empty-audience-sa", PublicKeyPEM: pemStr,
+		AllowAllAudiences: true, Status: "active",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	w := doSTSRequest(t, h, url.Values{
+		"grant_type": {"urn:ietf:params:oauth:grant-type:jwt-bearer"},
+		"assertion":  {signJWT(t, priv, "EdDSA", lazyClaims("empty-audience-sa", "empty-aud"))},
+	})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("empty audience should be denied: %d %s", w.Code, w.Body.String())
 	}
 }

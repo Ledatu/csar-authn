@@ -440,3 +440,140 @@ func TestSA_GetNotFound(t *testing.T) {
 		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+func TestSA_RecreateRevokedNameWithNewKeyAndPolicy(t *testing.T) {
+	th := newSATestHarness(t)
+	token := th.issueToken(t, saTestUserID)
+	oldPEM := testPEM(t)
+	create := func(pemStr string, audiences []string) *httptest.ResponseRecorder {
+		t.Helper()
+		body, _ := json.Marshal(createSARequest{
+			Name: "reused-sa", PublicKeyPEM: pemStr,
+			AllowedAudiences: audiences, TokenTTL: "30m",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/admin/service-accounts", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer "+token)
+		w := httptest.NewRecorder()
+		th.handler.handleCreateServiceAccount(w, req)
+		return w
+	}
+	if w := create(oldPEM, []string{"aud-a"}); w.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	revoke := httptest.NewRequest(http.MethodDelete, "/admin/service-accounts/reused-sa", nil)
+	revoke.SetPathValue("name", "reused-sa")
+	revoke.Header.Set("Authorization", "Bearer "+token)
+	revokeResult := httptest.NewRecorder()
+	th.handler.handleRevokeServiceAccount(revokeResult, revoke)
+	if revokeResult.Code != http.StatusNoContent {
+		t.Fatalf("revoke: %d %s", revokeResult.Code, revokeResult.Body.String())
+	}
+	list := httptest.NewRequest(http.MethodGet, "/admin/service-accounts?status=all", nil)
+	list.Header.Set("Authorization", "Bearer "+token)
+	listResult := httptest.NewRecorder()
+	th.handler.handleListServiceAccounts(listResult, list)
+	var accounts []saResponse
+	if err := json.Unmarshal(listResult.Body.Bytes(), &accounts); err != nil || len(accounts) != 1 || accounts[0].Status != "revoked" {
+		t.Fatalf("revoked account absent from all list: %+v, %v", accounts, err)
+	}
+	if w := create(oldPEM, []string{"aud-b"}); w.Code != http.StatusConflict {
+		t.Fatalf("old key reuse should fail: %d %s", w.Code, w.Body.String())
+	}
+	if w := create(testPEM(t), []string{"aud-b"}); w.Code != http.StatusOK {
+		t.Fatalf("reactivate: %d %s", w.Code, w.Body.String())
+	}
+	sa, err := th.store.GetServiceAccount(context.Background(), "reused-sa")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sa.Status != "active" || sa.Generation != 2 || sa.Revision != 3 || sa.RevokedAt != nil || len(sa.AllowedAudiences) != 1 || sa.AllowedAudiences[0] != "aud-b" {
+		t.Fatalf("unexpected reactivated account: %+v", sa)
+	}
+	events := th.auditRecorder.Events()
+	if len(events) != 3 || events[2].Action != "service_account.reactivate" {
+		t.Fatalf("expected create/revoke/reactivate audit events, got %+v", events)
+	}
+}
+
+func TestSA_UpdatePolicyRequiresFreshRevision(t *testing.T) {
+	th := newSATestHarness(t)
+	token := th.issueToken(t, saTestUserID)
+	if err := th.store.CreateServiceAccount(context.Background(), &store.ServiceAccount{
+		Name: "policy-sa", PublicKeyPEM: testPEM(t),
+		AllowedAudiences: []string{"aud-a"}, TokenTTL: time.Hour,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	update := func(revision string) *httptest.ResponseRecorder {
+		t.Helper()
+		body := []byte(`{"allowed_audiences":["aud-b"],"allow_all_audiences":false,"token_ttl":"30m"}`)
+		req := httptest.NewRequest(http.MethodPut, "/admin/service-accounts/policy-sa/policy", bytes.NewReader(body))
+		req.SetPathValue("name", "policy-sa")
+		req.Header.Set("Authorization", "Bearer "+token)
+		if revision != "" {
+			req.Header.Set("If-Match", revision)
+		}
+		w := httptest.NewRecorder()
+		th.handler.handleUpdateServiceAccountPolicy(w, req)
+		return w
+	}
+	if w := update(""); w.Code != http.StatusPreconditionRequired {
+		t.Fatalf("missing revision: %d %s", w.Code, w.Body.String())
+	}
+	if w := update("1"); w.Code != http.StatusOK {
+		t.Fatalf("update: %d %s", w.Code, w.Body.String())
+	}
+	if w := update("1"); w.Code != http.StatusPreconditionFailed {
+		t.Fatalf("stale revision: %d %s", w.Code, w.Body.String())
+	}
+	sa, err := th.store.GetServiceAccount(context.Background(), "policy-sa")
+	if err != nil || sa.Revision != 2 || sa.AllowedAudiences[0] != "aud-b" {
+		t.Fatalf("policy not updated: %+v, %v", sa, err)
+	}
+}
+
+func TestSA_ConfigManagedAccountIsVisibleAndReadOnly(t *testing.T) {
+	th := newSATestHarness(t)
+	token := th.issueToken(t, saTestUserID)
+	th.handler.Config().STS.Accounts = []authnconfig.BootstrapAccount{{
+		Name: "bootstrap-sa", PublicKeyPEM: testPEM(t),
+		AllowedAudiences: []string{"aud-config"}, TokenTTL: authnconfig.NewDuration(15 * time.Minute),
+	}}
+	list := httptest.NewRequest(http.MethodGet, "/admin/service-accounts?status=all", nil)
+	list.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	th.handler.handleListServiceAccounts(w, list)
+	var accounts []saResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &accounts); err != nil || len(accounts) != 1 || accounts[0].Source != "config" {
+		t.Fatalf("config account not listed: %+v, %v", accounts, err)
+	}
+	body, _ := json.Marshal(createSARequest{
+		Name: "bootstrap-sa", PublicKeyPEM: testPEM(t), AllowedAudiences: []string{"aud-a"},
+	})
+	create := httptest.NewRequest(http.MethodPost, "/admin/service-accounts", bytes.NewReader(body))
+	create.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	th.handler.handleCreateServiceAccount(w, create)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("config collision should fail: %d %s", w.Code, w.Body.String())
+	}
+	revoke := httptest.NewRequest(http.MethodDelete, "/admin/service-accounts/bootstrap-sa", nil)
+	revoke.SetPathValue("name", "bootstrap-sa")
+	revoke.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	th.handler.handleRevokeServiceAccount(w, revoke)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("config revoke should fail: %d %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSA_PolicyRejectsSubsecondTTL(t *testing.T) {
+	_, _, err := validateSAPolicy([]string{"aud-a"}, "500ms")
+	if err == nil {
+		t.Fatal("subsecond TTL would be truncated to zero by the database writer")
+	}
+	_, _, err = validateSAPolicy([]string{"aud-a"}, "1.5s")
+	if err == nil {
+		t.Fatal("fractional-second TTL would be truncated by the database writer")
+	}
+}

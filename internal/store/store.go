@@ -5,7 +5,9 @@
 package store
 
 import (
+	"bytes"
 	"context"
+	"encoding/pem"
 	"errors"
 	"time"
 
@@ -16,6 +18,9 @@ import (
 var (
 	ErrNotFound                      = errors.New("not found")
 	ErrAlreadyExists                 = errors.New("already exists")
+	ErrRevisionMismatch              = errors.New("revision mismatch")
+	ErrInactive                      = errors.New("service account is not active")
+	ErrKeyUnchanged                  = errors.New("service account public key must change")
 	ErrUnverifiedEmailConflict       = errors.New("email matches existing user but provider email is not verified")
 	ErrProviderAlreadyLinked         = errors.New("provider account is already linked to another user")
 	ErrPasskeyAlreadyLinked          = errors.New("passkey is already linked to a user")
@@ -275,6 +280,16 @@ type ServiceAccount struct {
 	CreatedAt         time.Time
 	RotatedAt         *time.Time
 	RevokedAt         *time.Time
+	ReactivatedAt     *time.Time
+	Revision          int64
+	Generation        int64
+}
+
+// SamePublicKeyPEM compares the DER key material, independent of PEM formatting.
+func SamePublicKeyPEM(a, b string) bool {
+	left, _ := pem.Decode([]byte(a))
+	right, _ := pem.Decode([]byte(b))
+	return left != nil && right != nil && bytes.Equal(left.Bytes, right.Bytes)
 }
 
 // Store defines the persistence contract for csar-authn.
@@ -392,6 +407,8 @@ type Store interface {
 
 	// ListActiveServiceAccounts returns all service accounts with status "active".
 	ListActiveServiceAccounts(ctx context.Context) ([]ServiceAccount, error)
+	// ListServiceAccounts returns database accounts filtered by active, revoked, or all.
+	ListServiceAccounts(ctx context.Context, status string) ([]ServiceAccount, error)
 
 	// GetServiceAccount returns a service account by name (any status).
 	// Returns ErrNotFound if the service account does not exist.
@@ -399,6 +416,11 @@ type Store interface {
 
 	// CreateServiceAccount inserts a new service account.
 	CreateServiceAccount(ctx context.Context, sa *ServiceAccount) error
+	// CreateOrReactivateServiceAccount inserts a new account or replaces a revoked
+	// account's key and policy under the same name. It never overwrites an active account.
+	CreateOrReactivateServiceAccount(ctx context.Context, sa *ServiceAccount) (reactivated bool, err error)
+	// UpdateServiceAccountPolicy conditionally replaces an active account's policy.
+	UpdateServiceAccountPolicy(ctx context.Context, name string, audiences []string, allowAll bool, ttl time.Duration, revision int64) (*ServiceAccount, error)
 
 	// UpdateServiceAccountKey rotates the public key for an active service account.
 	// Returns ErrNotFound if the service account does not exist or is not active.

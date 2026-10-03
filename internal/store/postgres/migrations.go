@@ -360,6 +360,14 @@ CREATE INDEX IF NOT EXISTS idx_seller_api_credentials_active
   WHERE revoked_at IS NULL;
 `,
 	},
+	{
+		Name: "020_service_account_lifecycle",
+		Up: `
+ALTER TABLE service_accounts ADD COLUMN IF NOT EXISTS revision BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE service_accounts ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL DEFAULT 1;
+ALTER TABLE service_accounts ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMPTZ;
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

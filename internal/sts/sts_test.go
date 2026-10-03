@@ -81,16 +81,13 @@ func newTestEnv(t *testing.T) *testEnv {
 				TokenTTL:          30 * time.Minute,
 			},
 		},
-		negative:         make(map[string]time.Time),
-		saLister:         mock.New(),
-		sessionMgr:       mgr,
-		replayStore:      NewMemoryReplayStore(),
-		assertionMaxAge:  5 * time.Minute,
-		defaultTTL:       time.Hour,
-		issuer:           testIssuer,
-		accountCacheTTL:  DefaultAccountCacheTTL,
-		negativeCacheTTL: DefaultNegativeCacheTTL,
-		logger:           slog.New(slog.NewTextHandler(io.Discard, nil)),
+		saLister:        mock.New(),
+		sessionMgr:      mgr,
+		replayStore:     NewMemoryReplayStore(),
+		assertionMaxAge: 5 * time.Minute,
+		defaultTTL:      time.Hour,
+		issuer:          testIssuer,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
 	}
 
 	return &testEnv{handler: h, saPrivKey: saPriv, saPubKey: saPub}

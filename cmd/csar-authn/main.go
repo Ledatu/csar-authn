@@ -394,10 +394,10 @@ func run(
 			}
 
 			if stsHandler != nil {
-				stsHandler.SetAssertionMaxAge(newCfg.STS.AssertionMaxAge.Std())
-				if err := stsHandler.Reload(applyCtx); err != nil {
+				if err := stsHandler.ReloadWithBootstrap(applyCtx, stsBootstrapAccounts(newCfg)); err != nil {
 					return false, fmt.Errorf("reloading STS accounts: %w", err)
 				}
+				stsHandler.SetAssertionMaxAge(newCfg.STS.AssertionMaxAge.Std())
 			}
 
 			h.SetConfig(newCfg)
@@ -489,16 +489,7 @@ func initSTS(
 		logger.Info("STS replay protection: postgres")
 	}
 
-	var bootstrap []sts.BootstrapAccount
-	for _, ba := range cfg.STS.Accounts {
-		bootstrap = append(bootstrap, sts.BootstrapAccount{
-			Name:              ba.Name,
-			PublicKeyPEM:      ba.PublicKeyPEM,
-			AllowedAudiences:  ba.AllowedAudiences,
-			AllowAllAudiences: ba.AllowAllAudiences,
-			TokenTTL:          ba.TokenTTL.Std(),
-		})
-	}
+	bootstrap := stsBootstrapAccounts(cfg)
 
 	stsHandler, err := sts.New(
 		ctx,
@@ -516,4 +507,18 @@ func initSTS(
 	}
 	logger.Info("STS enabled")
 	return stsHandler, nil
+}
+
+func stsBootstrapAccounts(cfg *config.Config) []sts.BootstrapAccount {
+	bootstrap := make([]sts.BootstrapAccount, 0, len(cfg.STS.Accounts))
+	for _, ba := range cfg.STS.Accounts {
+		bootstrap = append(bootstrap, sts.BootstrapAccount{
+			Name:              ba.Name,
+			PublicKeyPEM:      ba.PublicKeyPEM,
+			AllowedAudiences:  ba.AllowedAudiences,
+			AllowAllAudiences: ba.AllowAllAudiences,
+			TokenTTL:          ba.TokenTTL.Std(),
+		})
+	}
+	return bootstrap
 }
