@@ -202,6 +202,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("GET /admin/service-accounts", h.handleListServiceAccounts)
 		mux.HandleFunc("POST /admin/service-accounts", h.handleCreateServiceAccount)
 		mux.HandleFunc("GET /admin/service-accounts/{name}", h.handleGetServiceAccount)
+		mux.HandleFunc("PUT /admin/service-accounts/{name}/policy", h.handleUpdateServiceAccountPolicy)
 		mux.HandleFunc("DELETE /admin/service-accounts/{name}", h.handleRevokeServiceAccount)
 		mux.HandleFunc("POST /admin/service-accounts/{name}/rotate", h.handleRotateServiceAccount)
 

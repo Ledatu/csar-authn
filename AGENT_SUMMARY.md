@@ -18,6 +18,16 @@
 - OAuth login and callback handling.
 - Session issuance, refresh, logout, and JWKS publication.
 - STS token exchange and replay protection.
+- Database service accounts retain their name after revocation. Admin creation
+  reactivates a revoked name only with a fresh public key, replaces its audience
+  policy and TTL, and increments its generation. Active database policies can
+  be replaced through `PUT /admin/service-accounts/{name}/policy` with an
+  `If-Match` revision. The list supports `status=active|revoked|all`; config
+  accounts appear as read-only effective entries and win name collisions.
+- STS reads the current database row on every exchange. A committed revoke,
+  reactivation, key rotation, or policy edit affects subsequent exchanges on
+  every replica; a database read error fails closed for database accounts.
+  Already-issued tokens remain valid through their expiry.
 - Seller personal API keys: cookie-session creation/list/revocation, hashed
   storage with a five-active-key cap and 90-day expiry, current advert-read
   permission at creation, and mTLS-only introspection for the router.

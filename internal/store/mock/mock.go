@@ -629,11 +629,15 @@ func (s *Store) CleanExpiredPasskeyChallenges(_ context.Context) (int64, error) 
 }
 
 func (s *Store) ListActiveServiceAccounts(_ context.Context) ([]store.ServiceAccount, error) {
+	return s.ListServiceAccounts(context.Background(), "active")
+}
+
+func (s *Store) ListServiceAccounts(_ context.Context, status string) ([]store.ServiceAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []store.ServiceAccount
 	for _, sa := range s.serviceAccounts {
-		if sa.Status == "active" {
+		if status == "all" || sa.Status == status {
 			out = append(out, *sa)
 		}
 	}
@@ -661,9 +665,65 @@ func (s *Store) CreateServiceAccount(_ context.Context, sa *store.ServiceAccount
 		sa.Status = "active"
 	}
 	sa.CreatedAt = time.Now()
+	sa.Revision = 1
+	sa.Generation = 1
 	cp := *sa
 	s.serviceAccounts[sa.Name] = &cp
 	return nil
+}
+
+func (s *Store) CreateOrReactivateServiceAccount(_ context.Context, sa *store.ServiceAccount) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	existing, ok := s.serviceAccounts[sa.Name]
+	if !ok {
+		sa.Status = "active"
+		sa.CreatedAt = time.Now()
+		sa.Revision = 1
+		sa.Generation = 1
+		cp := *sa
+		s.serviceAccounts[sa.Name] = &cp
+		return false, nil
+	}
+	if existing.Status == "active" {
+		return false, store.ErrAlreadyExists
+	}
+	if store.SamePublicKeyPEM(existing.PublicKeyPEM, sa.PublicKeyPEM) {
+		return false, store.ErrKeyUnchanged
+	}
+	existing.PublicKeyPEM = sa.PublicKeyPEM
+	existing.AllowedAudiences = append([]string(nil), sa.AllowedAudiences...)
+	existing.AllowAllAudiences = sa.AllowAllAudiences
+	existing.TokenTTL = sa.TokenTTL
+	existing.Status = "active"
+	existing.RevokedAt = nil
+	now := time.Now()
+	existing.ReactivatedAt = &now
+	existing.Revision++
+	existing.Generation++
+	*sa = *existing
+	return true, nil
+}
+
+func (s *Store) UpdateServiceAccountPolicy(_ context.Context, name string, audiences []string, allowAll bool, ttl time.Duration, revision int64) (*store.ServiceAccount, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sa, ok := s.serviceAccounts[name]
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	if sa.Status != "active" {
+		return nil, store.ErrInactive
+	}
+	if sa.Revision != revision {
+		return nil, store.ErrRevisionMismatch
+	}
+	sa.AllowedAudiences = append([]string(nil), audiences...)
+	sa.AllowAllAudiences = allowAll
+	sa.TokenTTL = ttl
+	sa.Revision++
+	cp := *sa
+	return &cp, nil
 }
 
 func (s *Store) UpdateServiceAccountKey(_ context.Context, name, newPEM string) error {
@@ -674,6 +734,7 @@ func (s *Store) UpdateServiceAccountKey(_ context.Context, name, newPEM string) 
 		return store.ErrNotFound
 	}
 	sa.PublicKeyPEM = newPEM
+	sa.Revision++
 	now := time.Now()
 	sa.RotatedAt = &now
 	return nil
@@ -687,6 +748,7 @@ func (s *Store) RevokeServiceAccount(_ context.Context, name string) error {
 		return store.ErrNotFound
 	}
 	sa.Status = "revoked"
+	sa.Revision++
 	now := time.Now()
 	sa.RevokedAt = &now
 	return nil
