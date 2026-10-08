@@ -124,6 +124,18 @@ func run(
 	if err := st.Migrate(ctx); err != nil {
 		return fmt.Errorf("running migrations: %w", err)
 	}
+	if cfg.AuditOutboxEnabled {
+		pgStore := st.(*postgres.Store)
+		outbox, err := pgStore.EnableAuditOutbox(ctx)
+		if err != nil {
+			return fmt.Errorf("initializing audit outbox: %w", err)
+		}
+		stopRelay, err := outbox.StartRouterRelay(ctx, &cfg.Audit, logger.With("component", "audit-outbox"), reg)
+		if err != nil {
+			return err
+		}
+		defer stopRelay()
+	}
 	logger.Info("migrations applied")
 
 	// --- JWT keys ---

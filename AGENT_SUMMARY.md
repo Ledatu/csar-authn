@@ -38,7 +38,10 @@
 
 ## Dependencies
 - PostgreSQL for identity/session state.
-- OAuth providers configured in YAML and env-backed secrets.
+- OAuth providers configured in YAML and env-backed secrets. Explicit
+  `oauth.enabled: false` skips provider registration/discovery and returns 404
+  for OAuth login/callback flows; omission preserves enabled behavior.
+  STS and database readiness remain independent of OAuth provider enablement.
 - Router-backed authz and audit clients when enabled.
 - STS replay storage via Redis or Postgres depending on config.
 
@@ -70,3 +73,22 @@
 - `go build ./...`
 - `go test ./... -count=1`
 - `make lint`
+
+## Transactional audit coverage (activation pending, October 8)
+- Startup-only `audit_outbox_enabled: false` is the default. Enabling requires
+  PostgreSQL and configured router audit transport; the shared outbox migration
+  and relay start before serving. Source changes are not deployed.
+- Covered mutations: service-account create/reactivate/policy update/key rotate/
+  revoke and personal API-key create/revoke. Events commit in the same business
+  transaction. Covered handlers suppress their duplicate async emission only
+  when the PostgreSQL store advertises transactional coverage.
+- Events carry trusted caller/request identity, safe policy fields and a SHA256
+  fingerprint of public-key PEM. Private keys, public-key PEM, API-key hashes
+  and token prefixes are excluded. CreateServiceAccount remains insert-only;
+  the explicit create/reactivate path retains its separate semantics.
+- Sessions, passkeys, profile, merge and other mutation classes retain existing
+  async audit behavior. This flag does not make all authn activity transactional.
+- Enqueue failures roll back mutations; router outages retain the outbox. Core
+  backlog metrics distinguish observation failure from an empty backlog.
+- Read `internal/store/postgres/audit.go`, `audit_integration_test.go`, and the
+  README activation gates. Tests require the guarded local `csar_audit_test` DB.

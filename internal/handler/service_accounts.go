@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
@@ -15,6 +16,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/apierror"
 	"github.com/ledatu/csar-core/audit"
+	"github.com/ledatu/csar-core/gatewayctx"
 	pb "github.com/ledatu/csar-proto/csar/authz/v1"
 )
 
@@ -38,7 +40,7 @@ func (h *Handler) requireSAPermission(r *http.Request, subject string) *apierror
 }
 
 func (h *Handler) recordAudit(r *http.Request, actor, action, targetType, targetID string, afterState json.RawMessage) {
-	if h.auditRecorder == nil {
+	if h.auditRecorder == nil || h.transactionalAudit(action) {
 		return
 	}
 	event := &audit.Event{
@@ -267,7 +269,7 @@ func (h *Handler) handleCreateServiceAccount(w http.ResponseWriter, r *http.Requ
 		Status:            "active",
 	}
 
-	reactivated, err := h.store.CreateOrReactivateServiceAccount(r.Context(), sa)
+	reactivated, err := h.store.CreateOrReactivateServiceAccount(auditActorContext(r, subject), sa)
 	if err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			apierror.New("active_name_exists", http.StatusConflict, "active service account already exists").Write(w)
@@ -443,7 +445,7 @@ func (h *Handler) handleUpdateServiceAccountPolicy(w http.ResponseWriter, r *htt
 		_ = json.NewEncoder(w).Encode(saToResponse(previous))
 		return
 	}
-	updated, err := h.store.UpdateServiceAccountPolicy(r.Context(), name, audiences, body.AllowAllAudiences, ttl, revision)
+	updated, err := h.store.UpdateServiceAccountPolicy(auditActorContext(r, subject), name, audiences, body.AllowAllAudiences, ttl, revision)
 	if err != nil {
 		switch {
 		case errors.Is(err, store.ErrNotFound):
@@ -499,7 +501,7 @@ func (h *Handler) handleRevokeServiceAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.store.RevokeServiceAccount(r.Context(), name); err != nil {
+	if err := h.store.RevokeServiceAccount(auditActorContext(r, subject), name); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			apierror.New("not_found", http.StatusNotFound, "service account not found or already revoked").Write(w)
 			return
@@ -551,7 +553,7 @@ func (h *Handler) handleRotateServiceAccount(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	if err := h.store.UpdateServiceAccountKey(r.Context(), name, body.PublicKeyPEM); err != nil {
+	if err := h.store.UpdateServiceAccountKey(auditActorContext(r, subject), name, body.PublicKeyPEM); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			apierror.New("not_found", http.StatusNotFound, "service account not found or not active").Write(w)
 			return
@@ -573,4 +575,15 @@ func validatePEM(pemStr string) error {
 	}
 	_, err := x509.ParsePKIXPublicKey(block.Bytes)
 	return err
+}
+
+// auditActorContext carries a verified handler subject, never client-supplied headers.
+func auditActorContext(r *http.Request, subject string) context.Context {
+	id, _ := gatewayctx.FromContext(r.Context())
+	id.Subject = subject
+	return gatewayctx.NewContext(r.Context(), &id)
+}
+func (h *Handler) transactionalAudit(action string) bool {
+	store, ok := h.store.(interface{ TransactionalAudit(string) bool })
+	return ok && store.TransactionalAudit(action)
 }

@@ -35,6 +35,7 @@ type Manager struct {
 	cookieSecure           bool
 	cookieSameSite         http.SameSite
 	trustedProviders       map[string]bool
+	oauthDisabled          bool
 }
 
 // NewManager initializes Goth providers from config and returns a Manager.
@@ -54,6 +55,7 @@ func NewManager(cfg *config.Config, logger *slog.Logger) (*Manager, error) {
 		cookieSecure:           cfg.Cookie.Secure,
 		cookieSameSite:         httpx.ParseSameSite(cfg.Cookie.SameSite),
 		trustedProviders:       buildTrustedMap(cfg, registered),
+		oauthDisabled:          !cfg.OAuth.IsEnabled(),
 	}, nil
 }
 
@@ -71,6 +73,7 @@ func (m *Manager) Reload(cfg *config.Config) error {
 
 	m.mu.Lock()
 	m.trustedProviders = trusted
+	m.oauthDisabled = !cfg.OAuth.IsEnabled()
 	m.frontendURL = cfg.FrontendURL
 	m.allowedRedirectOrigins = allowed
 	m.baseURL = cfg.BaseURL
@@ -86,6 +89,11 @@ func (m *Manager) Reload(cfg *config.Config) error {
 // registered provider names (lowercased). Returns an error only when zero
 // providers could be registered.
 func applyGothProviders(cfg *config.Config, logger *slog.Logger) (map[string]bool, error) {
+	if !cfg.OAuth.IsEnabled() {
+		goth.ClearProviders()
+		logger.Info("OAuth disabled")
+		return map[string]bool{}, nil
+	}
 	store := sessions.NewCookieStore([]byte(cfg.OAuth.SessionSecret))
 	store.MaxAge(300)
 	store.Options.HttpOnly = true
@@ -170,11 +178,22 @@ func (m *Manager) IsTrusted(provider string) bool {
 	return m.trustedProviders[strings.ToLower(provider)]
 }
 
+// Enabled reports whether provider login and callbacks are available.
+func (m *Manager) Enabled() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return !m.oauthDisabled
+}
+
 // BeginAuthHandler returns an http.Handler that initiates the OAuth flow.
 // The provider name is extracted from the URL path: /auth/{provider}
 // Accepts an optional ?intent=link query parameter for explicit account linking.
 func (m *Manager) BeginAuthHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !m.Enabled() {
+			http.NotFound(w, r)
+			return
+		}
 		provider := extractProvider(r)
 		if provider == "" {
 			http.Error(w, "missing provider", http.StatusBadRequest)

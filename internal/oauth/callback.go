@@ -61,6 +61,10 @@ func CallbackHandler(
 	logger *slog.Logger,
 ) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !oauthMgr.Enabled() {
+			http.NotFound(w, r)
+			return
+		}
 		provider := extractProvider(r)
 		if provider == "" {
 			http.Error(w, "missing provider", http.StatusBadRequest)

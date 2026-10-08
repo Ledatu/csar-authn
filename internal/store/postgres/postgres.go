@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/audit"
 	"github.com/ledatu/csar-core/pgutil"
 )
 
@@ -22,6 +23,7 @@ import (
 type Store struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
+	outbox *audit.PGOutbox
 }
 
 // Option configures the PostgreSQL store.
