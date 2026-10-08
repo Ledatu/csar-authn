@@ -230,7 +230,7 @@ func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) recordAPIKeyAudit(r *http.Request, actor, action string, key *store.APICredential) {
-	if h.auditRecorder == nil {
+	if h.auditRecorder == nil || h.transactionalAudit(action) {
 		return
 	}
 	if err := h.auditRecorder.Record(r.Context(), &audit.Event{

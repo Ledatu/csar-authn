@@ -380,20 +380,21 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve audiences.
 	var audiences []string
-	if audience != "" {
+	switch {
+	case audience != "":
 		// Validate requested audience against SA's allowed audiences.
 		if !sa.AllowedAudiences[audience] {
 			writeError(w, http.StatusForbidden, "access_denied", "audience not allowed")
 			return
 		}
 		audiences = []string{audience}
-	} else if sa.AllowAllAudiences {
+	case sa.AllowAllAudiences:
 		// SA explicitly opts in to receiving all allowed audiences when none requested.
 		audiences = make([]string, 0, len(sa.AllowedAudiences))
 		for a := range sa.AllowedAudiences {
 			audiences = append(audiences, a)
 		}
-	} else {
+	default:
 		writeError(w, http.StatusBadRequest, "invalid_request", "audience parameter is required")
 		return
 	}

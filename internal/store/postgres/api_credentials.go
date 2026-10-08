@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/pgutil"
 )
 
 var _ store.APICredentialStore = (*Store)(nil)
@@ -40,6 +41,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at`,
 	).Scan(&key.CreatedAt); err != nil {
 		return fmt.Errorf("insert API credential: %w", err)
 	}
+	if err := s.enqueueAPIKey(ctx, tx, "api_key.create", key, key.OwnerID.String()); err != nil {
+		return err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("commit API credential: %w", err)
 	}
@@ -69,14 +73,20 @@ ORDER BY created_at DESC LIMIT 100`, ownerID)
 
 func (s *Store) RevokeAPICredential(ctx context.Context, ownerID, keyID uuid.UUID) (*store.APICredential, error) {
 	var key store.APICredential
-	err := s.pool.QueryRow(ctx, `UPDATE seller_api_credentials SET revoked_at = now()
+	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		err := tx.QueryRow(ctx, `UPDATE seller_api_credentials SET revoked_at = now()
 WHERE id = $1 AND owner_user_id = $2 AND revoked_at IS NULL
 RETURNING id, seller_id`, keyID, ownerID).Scan(&key.ID, &key.SellerID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, store.ErrNotFound
-	}
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return fmt.Errorf("revoke API credential: %w", err)
+		}
+		return s.enqueueAPIKey(ctx, tx, "api_key.revoke", &key, ownerID.String())
+	})
 	if err != nil {
-		return nil, fmt.Errorf("revoke API credential: %w", err)
+		return nil, err
 	}
 	return &key, nil
 }
