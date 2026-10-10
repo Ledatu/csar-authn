@@ -18,7 +18,7 @@ func legacySyncTestStore(t *testing.T) *Store {
 		t.Skip("CSAR_TEST_DSN not set; skipping postgres test")
 	}
 	ctx := context.Background()
-	s, err := New(ctx, dsn)
+	s, err := New(ctx, dsn, WithLegacyUsersSyncDSN(dsn))
 	if err != nil {
 		t.Fatal(err)
 	}

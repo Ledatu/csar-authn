@@ -111,7 +111,8 @@ func run(
 	var st store.Store
 	switch cfg.Database.Driver {
 	case "postgres":
-		pgStore, err := postgres.New(ctx, cfg.Database.DSN, postgres.WithLogger(logger))
+		pgStore, err := postgres.New(ctx, cfg.Database.DSN, postgres.WithLogger(logger),
+			postgres.WithLegacyUsersSyncDSN(cfg.LegacyUsersSync.LockDatabaseDSN))
 		if err != nil {
 			return fmt.Errorf("connecting to postgres: %w", err)
 		}
@@ -399,6 +400,10 @@ func run(
 			newCfg, err := config.LoadFromBytes(data)
 			if err != nil {
 				return false, err
+			}
+
+			if newCfg.LegacyUsersSync.LockDatabaseDSN != cfg.LegacyUsersSync.LockDatabaseDSN {
+				return false, fmt.Errorf("legacy_users_sync.lock_database_dsn requires a restart")
 			}
 
 			if err := oauthMgr.Reload(newCfg); err != nil {

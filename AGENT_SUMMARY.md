@@ -92,3 +92,11 @@
   backlog metrics distinguish observation failure from an empty backlog.
 - Read `internal/store/postgres/audit.go`, `audit_integration_test.go`, and the
   README activation gates. Tests require the guarded local `csar_audit_test` DB.
+
+## Legacy sync session endpoint
+Legacy sync apply uses a separate short-lived connection configured by
+`legacy_users_sync.lock_database_dsn`. Production maps it to the authn session
+alias; no fallback to the normal transaction pool is permitted. Acquire/close
+are bounded to5s, close survives request cancellation, and DSN changes require
+a restart. Session poolers must DISCARD ALL on disconnect. This preserves the
+lock across separate business transactions, but is not failover fencing.

@@ -161,3 +161,11 @@ qr_login:
 #   jwt:
 #     private_key_file: "./keys/private.pem"
 #     public_key_file: "./keys/public.pem"
+
+# Required when enabling legacy sync apply. A direct PG connection is also safe.
+# This example uses direct localhost PG; prod uses a dedicated session alias.
+legacy_users_sync:
+  enabled: false
+  lock_database_dsn: "${CSAR_AUTHN_LOCK_DATABASE_DSN}"
+  apply:
+    enabled: false

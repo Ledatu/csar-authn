@@ -3,9 +3,11 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/ledatu/csar-core/pgutil"
 
 	"github.com/ledatu/csar-authn/internal/store"
@@ -14,25 +16,39 @@ import (
 // legacyUsersSyncLockKey serializes legacy users sync apply runs across authn replicas.
 const legacyUsersSyncLockKey int64 = 0x6c65676163797573
 
-// TryLegacyUsersSyncLock takes the session advisory lock for one apply run.
-// ok is false when another replica holds it.
+// TryLegacyUsersSyncLock holds a dedicated PostgreSQL session across the
+// multi-transaction apply. Its configured endpoint must provide session pooling.
 func (s *Store) TryLegacyUsersSyncLock(ctx context.Context) (release func(), ok bool, err error) {
-	conn, err := s.pool.Acquire(ctx)
-	if err != nil {
-		return nil, false, fmt.Errorf("acquiring connection: %w", err)
+	if s.legacySyncConnConfig == nil {
+		return nil, false, fmt.Errorf("legacy users sync requires a session-safe lock_database_dsn")
 	}
-	if err := conn.QueryRow(ctx, `SELECT pg_try_advisory_lock($1)`, legacyUsersSyncLockKey).Scan(&ok); err != nil {
-		conn.Release()
+	acquireCtx, cancelAcquire := context.WithTimeout(ctx, 5*time.Second)
+	defer cancelAcquire()
+	conn, err := pgx.ConnectConfig(acquireCtx, s.legacySyncConnConfig.Copy())
+	if err != nil {
+		return nil, false, fmt.Errorf("connecting legacy users sync lock: %w", err)
+	}
+	var once sync.Once
+	closeSession := func() {
+		once.Do(func() {
+			// Terminating the dedicated client releases the lock; session poolers must
+			// DISCARD ALL before assigning its backend to a different client.
+			closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			defer cancel()
+			if err := conn.Close(closeCtx); err != nil {
+				s.logger.Warn("closing legacy users sync lock session", "error", err)
+			}
+		})
+	}
+	if err := conn.QueryRow(acquireCtx, `SELECT pg_try_advisory_lock($1)`, legacyUsersSyncLockKey).Scan(&ok); err != nil {
+		closeSession()
 		return nil, false, fmt.Errorf("taking legacy users sync lock: %w", err)
 	}
 	if !ok {
-		conn.Release()
+		closeSession()
 		return nil, false, nil
 	}
-	return func() {
-		_, _ = conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, legacyUsersSyncLockKey)
-		conn.Release()
-	}, true, nil
+	return closeSession, true, nil
 }
 
 // LinkLegacyAccount adds a provider link to an existing user. A link that
