@@ -201,3 +201,28 @@ Other sessions, passkeys, profiles, account merge, legacy sync and billing/campa
 producer classes are not yet transactional. They retain the existing async emission;
 only exact covered action names suppress post-commit duplicates. Direct store calls
 without a verified handler actor are explicitly marked unattributed.
+
+### Legacy sync and transaction poolers
+
+Legacy sync apply needs `legacy_users_sync.lock_database_dsn` pointing at a
+session pool or direct PostgreSQL. In production this is
+`CSAR_AUTHN_LOCK_DATABASE_DSN`, using the `csar_authn_session` Odyssey alias,
+the existing authn user/password and the same real authn database. This adds
+no database or role. The normal DSN remains transaction pooled.
+
+Each attempt opens a dedicated connection and keeps the session advisory lock
+across planning and all separate link/create transactions. Closing this client
+releases ownership; Odyssey must run DISCARD ALL before reusing its backend.
+Acquire and cleanup are bounded to five seconds; cleanup ignores caller
+cancellation. Missing DSN fails apply closed, while dry-run is unchanged.
+DSN changes require a restart and are rejected by the config watcher.
+
+This fixes backend reassignment by transaction pooling, not failover fencing:
+loss of the lock connection/primary does not atomically fence separate writes.
+Do not enable a sync job across a planned primary switch. No new claim of
+cross-primary exactly-once sync is made.
+
+Run isolated pooler acceptance from the configs repository with
+`python3 scripts/test-odyssey-session.py --authn-repo /path/to/csar-authn`.
+Use a Go workspace containing the matching csar-core schema revision when
+these PRs have not yet been released. No production DSN is accepted by tests.

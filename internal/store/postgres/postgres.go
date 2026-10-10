@@ -21,9 +21,11 @@ import (
 
 // Store implements store.Store backed by PostgreSQL.
 type Store struct {
-	pool   *pgxpool.Pool
-	logger *slog.Logger
-	outbox *audit.PGOutbox
+	pool                 *pgxpool.Pool
+	logger               *slog.Logger
+	outbox               *audit.PGOutbox
+	legacySyncDSN        string
+	legacySyncConnConfig *pgx.ConnConfig
 }
 
 // Option configures the PostgreSQL store.
@@ -34,6 +36,12 @@ func WithLogger(l *slog.Logger) Option {
 	return func(s *Store) { s.logger = l }
 }
 
+// WithLegacyUsersSyncDSN selects a session-pooled or direct connection for
+// the cross-replica legacy sync lock. It must never use transaction pooling.
+func WithLegacyUsersSyncDSN(dsn string) Option {
+	return func(s *Store) { s.legacySyncDSN = dsn }
+}
+
 // New creates a new PostgreSQL store and verifies the connection.
 func New(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	s := &Store{
@@ -41,6 +49,17 @@ func New(ctx context.Context, dsn string, opts ...Option) (*Store, error) {
 	}
 	for _, opt := range opts {
 		opt(s)
+	}
+
+	if s.legacySyncDSN != "" {
+		lockCfg, err := pgxpool.ParseConfig(s.legacySyncDSN)
+		if err != nil {
+			return nil, fmt.Errorf("invalid legacy_users_sync.lock_database_dsn")
+		}
+		s.legacySyncConnConfig = lockCfg.ConnConfig.Copy()
+		// This is a one-purpose connection; it has no reusable statement cache.
+		s.legacySyncConnConfig.DefaultQueryExecMode = pgx.QueryExecModeExec
+		s.legacySyncDSN = ""
 	}
 
 	pool, err := pgutil.NewPool(ctx, dsn, pgutil.WithLogger(s.logger))

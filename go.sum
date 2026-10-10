@@ -96,6 +96,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/ledatu/csar-core v0.1.44 h1:InJ8aSsw1NfpHdlxiZTI84KlbzdkgYtBj1ZYBfsUrm4=
 github.com/ledatu/csar-core v0.1.44/go.mod h1:YI7sPdV/ECwpjLf9bvZTUs8ASanNoMnsokbRvHtOkr4=
+github.com/ledatu/csar-core v0.1.45-0.20261010123016-b4fcc80cd52c h1:GCQpIRoyUIy9HfEE45R3sukjlie+I/HLP0U8Wzb7grc=
+github.com/ledatu/csar-core v0.1.45-0.20261010123016-b4fcc80cd52c/go.mod h1:YI7sPdV/ECwpjLf9bvZTUs8ASanNoMnsokbRvHtOkr4=
 github.com/ledatu/csar-proto v0.1.5 h1:w9/Kx8FlMYuGRdAINkYtdBkjCm+u2WYG5SkkzaP+rQI=
 github.com/ledatu/csar-proto v0.1.5/go.mod h1:9dGkHdtL22s3u7ENmRfOlaifCyLKiMYnXThLVnZZV5Y=
 github.com/markbates/goth v1.80.0 h1:NnvatczZDzOs1hn9Ug+dVYf2Viwwkp/ZDX5K+GLjan8=
