@@ -100,3 +100,20 @@ alias; no fallback to the normal transaction pool is permitted. Acquire/close
 are bounded to5s, close survives request cancellation, and DSN changes require
 a restart. Session poolers must DISCARD ALL on disconnect. This preserves the
 lock across separate business transactions, but is not failover fencing.
+
+## Email OTP transport selection (source only, October 11, 2026)
+- `emailotp.NewSender` renders the existing OTP template through `csar-core/email`.
+  Legacy `email_otp.postbox` remains supported. `email_otp.delivery` can select
+  `postbox` or `selectel`; Selectel needs SMTP username/password and a verified
+  sender domain, with TLS on port 1127 or required STARTTLS on port 1126. Password uses secret.Secret.
+- Sending stays synchronous in authn, with existing challenge TTL, rate limits
+  and failure behavior. Transport acceptance is not final mailbox delivery.
+  Unknown acceptance never triggers automatic failover. Codes do not enter notify.
+- `internal/config.ValidateReload` rejects email enablement, effective transport,
+  credential, sender, subject and OTP policy changes against startup before
+  OAuth/STS/handler reload side effects. The OTP handler captures its config once;
+  all its enabled settings require restart. Equivalent legacy/new Postbox syntax
+  is allowed. Key-file content changes require restart as well.
+  The existing session-lock DSN restart guard remains in the same preflight.
+- Transport changes require restart. Production Compose credential mounts need
+  separate rollout preparation; current production provider remains unchanged.

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/mail"
 
-	"github.com/ledatu/csar-core/postbox"
+	"github.com/ledatu/csar-core/email"
 
 	"github.com/ledatu/csar-authn/internal/config"
 )
@@ -18,31 +18,40 @@ type Sender interface {
 }
 
 type emailClient interface {
-	SendEmail(ctx context.Context, msg *postbox.Message) error
+	Send(context.Context, *email.Message) (email.Receipt, error)
 }
 
-// PostboxSender sends email through the Yandex Cloud Postbox HTTP API.
-type PostboxSender struct {
+// EmailSender renders OTP messages and delegates to the selected transport.
+type EmailSender struct {
 	from    string
 	subject string
 	client  emailClient
 }
 
-// NewPostboxSender creates a Postbox sender using the shared Yandex Cloud IAM resolver.
-func NewPostboxSender(cfg config.EmailOTPConfig, client *http.Client) (*PostboxSender, error) {
-	postboxClient, err := postbox.NewClient(&cfg.Postbox, client)
+// NewSender constructs provider-neutral OTP delivery. No message is sent here.
+func NewSender(cfg config.EmailOTPConfig, client *http.Client) (*EmailSender, error) {
+	transport, err := email.NewSender(cfg.EmailDelivery(), client)
 	if err != nil {
-		return nil, fmt.Errorf("initializing postbox client: %w", err)
+		return nil, fmt.Errorf("initializing email transport: %w", err)
 	}
-	return newPostboxSender(cfg, postboxClient), nil
+	return newEmailSender(cfg, transport), nil
 }
 
-func newPostboxSender(cfg config.EmailOTPConfig, client emailClient) *PostboxSender {
+// PostboxSender preserves the legacy constructor/type for existing callers.
+type PostboxSender = EmailSender
+
+// NewPostboxSender constructs OTP delivery using the legacy Postbox settings.
+func NewPostboxSender(cfg config.EmailOTPConfig, client *http.Client) (*PostboxSender, error) {
+	cfg.Delivery = nil
+	return NewSender(cfg, client)
+}
+
+func newEmailSender(cfg config.EmailOTPConfig, client emailClient) *EmailSender {
 	from := cfg.SenderAddress
 	if cfg.SenderName != "" {
 		from = (&mail.Address{Name: cfg.SenderName, Address: cfg.SenderAddress}).String()
 	}
-	return &PostboxSender{
+	return &EmailSender{
 		from:    from,
 		subject: cfg.Subject,
 		client:  client,
@@ -50,14 +59,11 @@ func newPostboxSender(cfg config.EmailOTPConfig, client emailClient) *PostboxSen
 }
 
 // SendOTP sends a one-time code. It never returns or logs the code.
-func (s *PostboxSender) SendOTP(ctx context.Context, to string, code string) error {
-	return s.client.SendEmail(ctx, &postbox.Message{
-		FromEmailAddress: s.from,
-		ToAddresses:      []string{to},
-		Subject:          s.subject,
-		TextBody:         textBody(code),
-		HTMLBody:         htmlBody(code),
+func (s *EmailSender) SendOTP(ctx context.Context, to string, code string) error {
+	_, err := s.client.Send(ctx, &email.Message{
+		From: s.from, To: to, Subject: s.subject, TextBody: textBody(code), HTMLBody: htmlBody(code),
 	})
+	return err
 }
 
 func textBody(code string) string {

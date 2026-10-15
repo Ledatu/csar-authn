@@ -183,11 +183,11 @@ func run(
 
 	var emailOTPSender emailotp.Sender
 	if cfg.EmailOTP != nil && cfg.EmailOTP.Enabled {
-		emailOTPSender, err = emailotp.NewPostboxSender(*cfg.EmailOTP, nil)
+		emailOTPSender, err = emailotp.NewSender(*cfg.EmailOTP, nil)
 		if err != nil {
 			return fmt.Errorf("initializing email OTP sender: %w", err)
 		}
-		logger.Info("email OTP sender initialized", "endpoint", cfg.EmailOTP.Postbox.Endpoint)
+		logger.Info("email OTP sender initialized", "provider", cfg.EmailOTP.EmailDelivery().Provider)
 	}
 
 	var stsHandler *sts.Handler
@@ -402,8 +402,8 @@ func run(
 				return false, err
 			}
 
-			if newCfg.LegacyUsersSync.LockDatabaseDSN != cfg.LegacyUsersSync.LockDatabaseDSN {
-				return false, fmt.Errorf("legacy_users_sync.lock_database_dsn requires a restart")
+			if err := config.ValidateReload(cfg, newCfg); err != nil {
+				return false, err
 			}
 
 			if err := oauthMgr.Reload(newCfg); err != nil {

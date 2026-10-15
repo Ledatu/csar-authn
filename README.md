@@ -226,3 +226,55 @@ Run isolated pooler acceptance from the configs repository with
 `python3 scripts/test-odyssey-session.py --authn-repo /path/to/csar-authn`.
 Use a Go workspace containing the matching csar-core schema revision when
 these PRs have not yet been released. No production DSN is accepted by tests.
+
+## Email OTP delivery
+
+Email OTP supports Yandex Cloud Postbox and Selectel Mail Service. Existing
+`email_otp.postbox` settings keep selecting Postbox. To select Selectel, remove
+that block and configure:
+
+```yaml
+email_otp:
+  enabled: true
+  sender_address: "${EMAIL_OTP_FROM_ADDRESS}"
+  sender_name: "AURUMSKYNET ID"
+  delivery:
+    provider: selectel
+    selectel:
+      username: "${SELECTEL_SMTP_USERNAME}"
+      password: "${SELECTEL_SMTP_PASSWORD}"
+      # Defaults: smtp.mail.selcloud.ru, implicit TLS on 1127, 10s timeout.
+```
+
+For required STARTTLS, set `tls_mode: starttls`; the default port becomes 1126.
+Certificates are verified and plaintext submission is forbidden. The sender
+must belong to a domain verified in Selectel. Follow the
+[Selectel setup guide](https://docs.selectel.ru/email-service/connect-email-service/)
+for verification and SPF/DKIM/DMARC records. Credentials are the mail resource's
+SMTP credentials, independent of Yandex's service-account key.
+
+The new `delivery` block also accepts `provider: postbox` with a nested `postbox`
+section using the existing schema. Both Postbox forms require an HTTPS endpoint
+without URL credentials, query or fragment. Configuring both legacy `postbox`
+and new `delivery`, or both provider sections, is rejected.
+
+All enabled Email OTP settings, including TTL, cooldown, rate/attempt limits,
+effective transport/credentials, sender address/name and subject, require
+restarting authn. Enabling or disabling OTP also requires a restart. The watcher
+rejects the entire reload before OAuth, STS or handler changes if any of these
+settings differ from startup, keeping the sender, registered routes and OTP
+handler consistent. Equivalent legacy and new Postbox syntax is accepted.
+Editing a Postbox service-account key file in place also requires a restart:
+the watcher compares the configured path, not file contents.
+
+Authn still generates, hashes and verifies codes itself and submits emails
+synchronously. Provider acceptance is not proof of inbox delivery. A connection
+loss after SMTP DATA may hide an accepted message; authn reports the existing
+send-failure response and does not automatically retry or switch providers.
+Provider replies and OTP content are excluded from transport errors.
+
+The production Compose stack still mounts the legacy Postbox credential file.
+An SMTP-only rollout must update that host wiring as well as the manifest and
+image. This source change does not switch or deploy the production provider.
+`csar-notify` email remains disabled pending verified contacts and durable
+per-target delivery tracking.
