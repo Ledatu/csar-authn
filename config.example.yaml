@@ -111,6 +111,20 @@ qr_login:
 #       auth_mode: "service_account"
 #       sa_key_file: "${YANDEX_POSTBOX_SA_KEY_FILE}"
 
+# Selectel alternative: replace the legacy postbox block above with delivery.
+# Verify the sender domain in Selectel and inject its SMTP resource credentials.
+# Do not configure both email_otp.postbox and email_otp.delivery.
+#   delivery:
+#     provider: selectel
+#     selectel:
+#       host: smtp.mail.selcloud.ru
+#       port: 1127
+#       tls_mode: tls       # or starttls with port 1126; plaintext is forbidden
+#       username: "${SELECTEL_SMTP_USERNAME}"
+#       password: "${SELECTEL_SMTP_PASSWORD}"
+#       timeout: "10s"
+# Transport changes require a service restart. No automatic provider failover.
+
 # --- Redis (optional) ---
 # When configured, used for STS replay protection (preferred over Postgres).
 # Falls back to Postgres or in-memory if not set.
