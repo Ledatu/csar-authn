@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -15,6 +16,7 @@ type APICredential struct {
 	OwnerID    uuid.UUID  `json:"-"`
 	SellerID   string     `json:"seller_id"`
 	Label      string     `json:"label"`
+	Scopes     []string   `json:"scopes"`
 	TokenHash  string     `json:"-"`
 	Prefix     string     `json:"prefix"`
 	CreatedAt  time.Time  `json:"created_at"`
@@ -33,3 +35,25 @@ type APICredentialStore interface {
 }
 
 var ErrAPICredentialLimit = errors.New("active API credential limit reached")
+
+const (
+	APIKeyScopeAdvertsRead     = "adverts:read"
+	APIKeyScopeAnalyticsRead   = "analytics:read"
+	APIKeyScopeAdvertisingRead = "advertising:read"
+)
+
+// ValidateAPICredentialScopes rejects absent or unknown authority. Legacy
+// creation defaults are applied explicitly by the caller, never at introspection.
+func ValidateAPICredentialScopes(scopes []string) error {
+	if len(scopes) < 1 || len(scopes) > 3 {
+		return errors.New("scopes must contain one to three supported read scopes")
+	}
+	seen := make(map[string]bool, len(scopes))
+	for _, scope := range scopes {
+		if scope != APIKeyScopeAdvertsRead && scope != APIKeyScopeAnalyticsRead && scope != APIKeyScopeAdvertisingRead || seen[scope] {
+			return fmt.Errorf("unsupported or duplicate scope %q", scope)
+		}
+		seen[scope] = true
+	}
+	return nil
+}

@@ -278,3 +278,57 @@ An SMTP-only rollout must update that host wiring as well as the manifest and
 image. This source change does not switch or deploy the production provider.
 `csar-notify` email remains disabled pending verified contacts and durable
 per-target delivery tracking.
+
+## Personal-key scope consent (source only, October 22, 2026)
+
+`POST /auth/me/api-keys` remains cookie-session and trusted-Origin only. Its
+request is `{ "seller_id": "<seller UUID>", "label": "<label>", "scopes":
+["analytics:read"] }`. Supported selections are `adverts:read` (saved settings),
+`analytics:read` (Analytics) and `advertising:read` (Mass Adverts performance),
+individually or combined. Omission preserves the legacy `adverts:read` default; explicit null,
+empty arrays, duplicates, unknown names and write scopes are rejected. Creation
+requires current `campaign_module/massAdvert.read` for adverts/advertising and
+`campaign_module/analytics.read` for analytics, each in `wildberries:<seller>`.
+If any requested permission is denied or cannot be checked, no key is issued.
+
+Create/list responses expose the issued `scopes` array. Introspection returns
+that persisted authority without adding newly available scopes. Scope changes
+require a new key and explicit consent; existing keys cannot be upgraded in
+place. The five-active-key limit, 90-day expiry, seller binding, hashed storage,
+session-only revoke and current permission checks in the router remain intact.
+The router's positive introspection cache still applies (15 seconds by default,
+or the configured route cache TTL, capped by expiry); revocation is observable
+after that existing cache bound. Module permission changes remain governed by
+the router's authorization checks and their configured policy/cache behavior.
+
+Migration `021_seller_api_credential_scopes` adds a constrained, non-null text
+array. Legacy rows and inserts from older binaries default to only
+`adverts:read`. No deployed key gains analytics authority. The migration is
+additive and old writers tolerate it; keep the column on application rollback.
+
+Keys containing analytics or advertising consent use `aurum_pat_v2_` followed by the same
+32-byte random base64url payload. Existing router prefix checks accept this
+format. Older authn introspectors require the original exact token length, so
+they return inactive for v2 keys instead of incorrectly granting advert access.
+New introspectors accept both formats. This makes mixed-version rollout and
+application rollback fail closed, although new keys can be intermittently
+rejected until all introspection replicas have upgraded. Enable the UI scope
+selector only after authn convergence and Analytics routes are ready. There is
+no server-side bypass of explicit scope selection or per-module permission.
+
+Regression tests cover legacy omission, analytics-only and combined consent,
+denied permissions, malformed selections, persisted introspection, token
+version compatibility, seller binding and unchanged TTL/cap. The PostgreSQL
+integration fixture uses only a guarded localhost `csar_audit_test` database
+and a unique disposable schema. It verifies pre-migration backfill, repeated
+migration, old inserts, constraints, new persistence/listing, owner isolation,
+expiry and revocation. No migration or credential issuance was run in production.
+
+Migration `022_seller_api_advertising_scope` expands the constrained vocabulary
+to three unique scopes without updating any row or changing the advert-only
+default. Earlier scope-aware authn replicas reject the unknown
+`advertising:read` value instead of substituting another grant; original
+introspectors reject the v2 token length. Thus the v2 format remains sufficient
+for fail-closed rollback. Finish upgrading all introspection replicas before
+enabling the new scope choice. The Advertising scope also has its own route
+policy and cannot be substituted by a saved-settings or Analytics key.

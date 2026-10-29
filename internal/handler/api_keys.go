@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,6 +24,10 @@ import (
 const maxActiveAPIKeys = 5
 const apiKeyLifetime = 90 * 24 * time.Hour
 const apiKeyPrefix = "aurum_pat_"
+
+// Legacy introspectors require the exact v1 length and must reject scoped v2
+// keys instead of assuming their historical, hardcoded adverts:read authority.
+const apiKeyScopedPrefix = "aurum_pat_v2_"
 
 func (h *Handler) apiKeyStore() store.APICredentialStore {
 	keys, _ := h.store.(store.APICredentialStore)
@@ -101,8 +106,9 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		SellerID string `json:"seller_id"`
-		Label    string `json:"label"`
+		SellerID string          `json:"seller_id"`
+		Label    string          `json:"label"`
+		Scopes   json.RawMessage `json:"scopes"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	decoder := json.NewDecoder(r.Body)
@@ -120,28 +126,43 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, csarerrors.Validation("label must be 1-80 characters"))
 		return
 	}
-	access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
-		Subject: user.ID.String(), Resource: "campaign_module", Action: "massAdvert.read",
-		ScopeType: "tenant", ScopeId: "wildberries:" + body.SellerID,
-	})
+	scopes, err := requestedAPIKeyScopes(body.Scopes)
 	if err != nil {
-		httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
+		httpx.WriteError(w, csarerrors.Validation("%s", err))
 		return
 	}
-	if !access.Allowed {
-		httpx.WriteError(w, csarerrors.Forbidden("advert read access required"))
-		return
+	for _, scope := range scopes {
+		action := "massAdvert.read"
+		if scope == store.APIKeyScopeAnalyticsRead {
+			action = "analytics.read"
+		}
+		access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
+			Subject: user.ID.String(), Resource: "campaign_module", Action: action,
+			ScopeType: "tenant", ScopeId: "wildberries:" + body.SellerID,
+		})
+		if err != nil || access == nil {
+			httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
+			return
+		}
+		if !access.Allowed {
+			httpx.WriteError(w, csarerrors.Forbidden("%s access required", scope))
+			return
+		}
 	}
 	random := make([]byte, 32)
 	if _, err := rand.Read(random); err != nil {
 		httpx.WriteError(w, csarerrors.Internal(err))
 		return
 	}
-	raw := apiKeyPrefix + base64.RawURLEncoding.EncodeToString(random)
+	prefix := apiKeyPrefix
+	if slices.Contains(scopes, store.APIKeyScopeAnalyticsRead) || slices.Contains(scopes, store.APIKeyScopeAdvertisingRead) {
+		prefix = apiKeyScopedPrefix
+	}
+	raw := prefix + base64.RawURLEncoding.EncodeToString(random)
 	digest := sha256.Sum256([]byte(raw))
 	key := &store.APICredential{
 		ID: uuid.New(), OwnerID: user.ID, SellerID: body.SellerID, Label: body.Label,
-		TokenHash: hex.EncodeToString(digest[:]), Prefix: raw[:len(apiKeyPrefix)+8],
+		TokenHash: hex.EncodeToString(digest[:]), Prefix: raw[:len(prefix)+8], Scopes: scopes,
 		ExpiresAt: time.Now().UTC().Add(apiKeyLifetime),
 	}
 	if err := keys.CreateAPICredential(r.Context(), key, maxActiveAPIKeys); err != nil {
@@ -155,6 +176,26 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"key": key, "token": raw})
 	h.recordAPIKeyAudit(r, user.ID.String(), "api_key.create", key)
+}
+
+func requestedAPIKeyScopes(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 {
+		return []string{store.APIKeyScopeAdvertsRead}, nil
+	}
+	var scopes []string
+	if err := json.Unmarshal(raw, &scopes); err != nil {
+		return nil, errors.New("scopes must be an array of read scope names")
+	}
+	if err := store.ValidateAPICredentialScopes(scopes); err != nil {
+		return nil, err
+	}
+	slices.Sort(scopes)
+	return scopes, nil
+}
+
+func validAPIKeyFormat(token string) bool {
+	return strings.HasPrefix(token, apiKeyPrefix) && len(token) == len(apiKeyPrefix)+43 ||
+		strings.HasPrefix(token, apiKeyScopedPrefix) && len(token) == len(apiKeyScopedPrefix)+43
 }
 
 func (h *Handler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
@@ -202,7 +243,7 @@ func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request)
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil ||
-		!strings.HasPrefix(body.Token, apiKeyPrefix) || len(body.Token) != len(apiKeyPrefix)+43 {
+		!validAPIKeyFormat(body.Token) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"active": false})
 		return
 	}
@@ -221,10 +262,14 @@ func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, csarerrors.Internal(err))
 		return
 	}
+	if key == nil || store.ValidateAPICredentialScopes(key.Scopes) != nil {
+		httpx.WriteError(w, csarerrors.Unavailable("API key scope data unavailable"))
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
 		"active": true, "subject": key.OwnerID.String(), "credential_id": key.ID.String(),
-		"seller_id": key.SellerID, "scopes": []string{"adverts:read"},
+		"seller_id": key.SellerID, "scopes": key.Scopes,
 		"expires_at": key.ExpiresAt,
 	})
 }
