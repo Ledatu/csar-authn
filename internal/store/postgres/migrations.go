@@ -368,6 +368,40 @@ ALTER TABLE service_accounts ADD COLUMN IF NOT EXISTS generation BIGINT NOT NULL
 ALTER TABLE service_accounts ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMPTZ;
 `,
 	},
+	{
+		Name: "021_seller_api_credential_scopes",
+		Up: `
+-- Existing rows and legacy writers retain exactly advert-read authority.
+ALTER TABLE seller_api_credentials
+  ADD COLUMN IF NOT EXISTS scopes TEXT[] NOT NULL DEFAULT ARRAY['adverts:read']::TEXT[];
+DO $$ BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint
+    WHERE conrelid = 'seller_api_credentials'::regclass
+      AND conname = 'seller_api_credentials_scopes_check') THEN
+    ALTER TABLE seller_api_credentials ADD CONSTRAINT seller_api_credentials_scopes_check
+      CHECK (cardinality(scopes) BETWEEN 1 AND 2
+        AND array_position(scopes, NULL) IS NULL
+        AND scopes <@ ARRAY['adverts:read', 'analytics:read']::TEXT[]
+        AND (cardinality(scopes) = 1 OR scopes[1] <> scopes[2]));
+  END IF;
+END $$;
+`,
+	},
+	{
+		Name: "022_seller_api_advertising_scope",
+		Up: `
+-- Expand only the consent vocabulary. Never rewrite existing grants or defaults.
+ALTER TABLE seller_api_credentials DROP CONSTRAINT IF EXISTS seller_api_credentials_scopes_check;
+ALTER TABLE seller_api_credentials ADD CONSTRAINT seller_api_credentials_scopes_check
+  CHECK (cardinality(scopes) BETWEEN 1 AND 3
+    AND array_position(scopes, NULL) IS NULL
+    AND scopes <@ ARRAY['adverts:read', 'analytics:read', 'advertising:read']::TEXT[]
+    AND cardinality(scopes) =
+      (CASE WHEN 'adverts:read' = ANY(scopes) THEN 1 ELSE 0 END
+       + CASE WHEN 'analytics:read' = ANY(scopes) THEN 1 ELSE 0 END
+       + CASE WHEN 'advertising:read' = ANY(scopes) THEN 1 ELSE 0 END));
+`,
+	},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

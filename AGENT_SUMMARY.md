@@ -29,8 +29,19 @@
   every replica; a database read error fails closed for database accounts.
   Already-issued tokens remain valid through their expiry.
 - Seller personal API keys: cookie-session creation/list/revocation, hashed
-  storage with a five-active-key cap and 90-day expiry, current advert-read
-  permission at creation, and mTLS-only introspection for the router.
+  storage with a five-active-key cap and 90-day expiry, per-requested-scope
+  current module permissions at creation, and mTLS-only introspection for the
+  router. `POST /auth/me/api-keys` accepts optional `scopes`: `adverts:read`
+  `analytics:read` and/or `advertising:read`; omission preserves advert-only consent. Empty/null,
+  duplicate and unsupported selections fail. Migration 021 backfills legacy
+  rows/defaults to advert-only; introspection returns stored scopes unchanged.
+  Migration 022 adds only the Advertising consent vocabulary; existing rows
+  and defaults are unchanged. Advertising requires current `massAdvert.read`.
+  Analytics- or Advertising-containing keys use `aurum_pat_v2_` so legacy introspectors reject
+  their different length instead of assigning hardcoded advert access. Mixed
+  replicas can reject new keys until upgrade convergence; rollback fails closed.
+  Earlier scope-aware replicas reject unknown Advertising consent, preserving
+  fail-closed rollback. Source only: no keys issued or production migration applied.
 - Bot verification and account merge flows.
 - Optional admin permissions and service-account management.
 - `POST /svc/authn/users/resolve-links` maps Telegram/Yandex provider ids to authn user ids (mapping only, no profile data, service callers only) for the legacy identity sync.

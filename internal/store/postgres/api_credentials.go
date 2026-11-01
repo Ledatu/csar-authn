@@ -15,6 +15,12 @@ import (
 var _ store.APICredentialStore = (*Store)(nil)
 
 func (s *Store) CreateAPICredential(ctx context.Context, key *store.APICredential, maxActive int) error {
+	if key.Scopes == nil {
+		key.Scopes = []string{store.APIKeyScopeAdvertsRead}
+	}
+	if err := store.ValidateAPICredentialScopes(key.Scopes); err != nil {
+		return fmt.Errorf("invalid API credential scopes: %w", err)
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin API credential creation: %w", err)
@@ -35,9 +41,9 @@ WHERE owner_user_id = $1 AND revoked_at IS NULL AND expires_at > now()`, key.Own
 		return store.ErrAPICredentialLimit
 	}
 	if err := tx.QueryRow(ctx, `INSERT INTO seller_api_credentials
-(id, owner_user_id, seller_id, label, token_hash, token_prefix, expires_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at`,
-		key.ID, key.OwnerID, key.SellerID, key.Label, key.TokenHash, key.Prefix, key.ExpiresAt,
+(id, owner_user_id, seller_id, label, token_hash, token_prefix, expires_at, scopes)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING created_at`,
+		key.ID, key.OwnerID, key.SellerID, key.Label, key.TokenHash, key.Prefix, key.ExpiresAt, key.Scopes,
 	).Scan(&key.CreatedAt); err != nil {
 		return fmt.Errorf("insert API credential: %w", err)
 	}
@@ -52,7 +58,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING created_at`,
 
 func (s *Store) ListAPICredentials(ctx context.Context, ownerID uuid.UUID) ([]store.APICredential, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id, owner_user_id, seller_id, label,
-token_prefix, created_at, expires_at, last_used_at, revoked_at
+token_prefix, created_at, expires_at, last_used_at, revoked_at, scopes
 FROM seller_api_credentials WHERE owner_user_id = $1
 ORDER BY created_at DESC LIMIT 100`, ownerID)
 	if err != nil {
@@ -63,7 +69,7 @@ ORDER BY created_at DESC LIMIT 100`, ownerID)
 	for rows.Next() {
 		var item store.APICredential
 		if err := rows.Scan(&item.ID, &item.OwnerID, &item.SellerID, &item.Label,
-			&item.Prefix, &item.CreatedAt, &item.ExpiresAt, &item.LastUsedAt, &item.RevokedAt); err != nil {
+			&item.Prefix, &item.CreatedAt, &item.ExpiresAt, &item.LastUsedAt, &item.RevokedAt, &item.Scopes); err != nil {
 			return nil, fmt.Errorf("scan API credential: %w", err)
 		}
 		items = append(items, item)
@@ -94,11 +100,11 @@ RETURNING id, seller_id`, keyID, ownerID).Scan(&key.ID, &key.SellerID)
 func (s *Store) FindAPICredentialByHash(ctx context.Context, hash string) (*store.APICredential, error) {
 	var item store.APICredential
 	err := s.pool.QueryRow(ctx, `SELECT id, owner_user_id, seller_id, label,
-token_prefix, created_at, expires_at, last_used_at, revoked_at
+token_prefix, created_at, expires_at, last_used_at, revoked_at, scopes
 FROM seller_api_credentials WHERE token_hash = $1 AND revoked_at IS NULL
 AND expires_at > now()`, hash).Scan(&item.ID, &item.OwnerID, &item.SellerID,
 		&item.Label, &item.Prefix, &item.CreatedAt, &item.ExpiresAt,
-		&item.LastUsedAt, &item.RevokedAt)
+		&item.LastUsedAt, &item.RevokedAt, &item.Scopes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, store.ErrNotFound
 	}
