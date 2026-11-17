@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
 
 	"github.com/google/uuid"
 
@@ -22,12 +21,8 @@ const (
 	maxAdminUserListLimit     = 50
 	minAdminUserQueryLength   = 2
 	maxServiceUserResolveIDs  = 100
-	// maxBrowserUserResolveIDs bounds one browser batch. It caps the worst-case
-	// avatar signing work per request and keeps the body small; clients chunk.
+	// maxBrowserUserResolveIDs bounds response size; clients chunk larger batches.
 	maxBrowserUserResolveIDs = 200
-	// avatarResolveConcurrency bounds simultaneous csar-s3 signing calls for a
-	// single batch, so a cold cache cannot fan out one round trip per user.
-	avatarResolveConcurrency = 8
 )
 
 // aurumProvider resolves ids that are authn user UUIDs themselves (audit trails
@@ -43,11 +38,9 @@ var browserResolvableProviders = map[string]struct{}{
 }
 
 type adminUserListItem struct {
-	ID               string `json:"id"`
-	Email            string `json:"email,omitempty"`
-	DisplayName      string `json:"display_name"`
-	AvatarURL        string `json:"avatar_url,omitempty"`
-	AvatarPreviewURL string `json:"avatar_preview_url,omitempty"`
+	ID          string `json:"id"`
+	Email       string `json:"email,omitempty"`
+	DisplayName string `json:"display_name"`
 }
 
 type adminUserListResponse struct {
@@ -60,10 +53,8 @@ type serviceUserResolveRequest struct {
 }
 
 type serviceUserResolveItem struct {
-	ID               string `json:"id"`
-	DisplayName      string `json:"display_name"`
-	AvatarURL        string `json:"avatar_url,omitempty"`
-	AvatarPreviewURL string `json:"avatar_preview_url,omitempty"`
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
 }
 
 type serviceUserResolveResponse struct {
@@ -136,13 +127,10 @@ func (h *Handler) handleListAdminUsers(w http.ResponseWriter, r *http.Request) {
 		Limit: limit,
 	}
 	for i := range users {
-		avatarURL, avatarPreviewURL := h.resolveAvatarURLs(r.Context(), users[i].AvatarStorageKey, users[i].AvatarPreviewStorageKey, users[i].AvatarURL)
 		resp.Users[i] = adminUserListItem{
-			ID:               users[i].ID.String(),
-			Email:            users[i].Email,
-			DisplayName:      users[i].DisplayName,
-			AvatarURL:        avatarURL,
-			AvatarPreviewURL: avatarPreviewURL,
+			ID:          users[i].ID.String(),
+			Email:       users[i].Email,
+			DisplayName: users[i].DisplayName,
 		}
 	}
 
@@ -202,15 +190,12 @@ func (h *Handler) resolveUsersByID(ctx context.Context, ids []uuid.UUID) ([]serv
 		if !ok {
 			continue
 		}
-		avatarURL, avatarPreviewURL := h.resolveAvatarURLs(ctx, r.AvatarStorageKey, r.AvatarPreviewStorageKey, r.AvatarURL)
 		out = append(out, serviceUserResolveItem{
 			// Echo the requested id, not the canonical one. Consumers key this
 			// response by the id they asked for; a merged account would
 			// otherwise resolve to an id they never sent and drop out of their map.
-			ID:               id.String(),
-			DisplayName:      r.DisplayName,
-			AvatarURL:        avatarURL,
-			AvatarPreviewURL: avatarPreviewURL,
+			ID:          id.String(),
+			DisplayName: r.DisplayName,
 		})
 	}
 	return out, nil
@@ -225,13 +210,11 @@ type browserUserResolveRequest struct {
 // Any authenticated seller can call this, so it carries only what a member card
 // renders.
 type browserUserItem struct {
-	ID               string `json:"id"`
-	Provider         string `json:"provider"`
-	ProviderUserID   string `json:"provider_user_id"`
-	DisplayName      string `json:"display_name"`
-	Username         string `json:"username,omitempty"`
-	AvatarURL        string `json:"avatar_url,omitempty"`
-	AvatarPreviewURL string `json:"avatar_preview_url,omitempty"`
+	ID             string `json:"id"`
+	Provider       string `json:"provider"`
+	ProviderUserID string `json:"provider_user_id"`
+	DisplayName    string `json:"display_name"`
+	Username       string `json:"username,omitempty"`
 }
 
 type browserUserResolveResponse struct {
@@ -402,38 +385,21 @@ func (h *Handler) telegramLink(ctx context.Context, userID uuid.UUID) (string, m
 	return "", nil
 }
 
-// browserUserItems resolves a batch with bounded parallelism. The avatar cache
-// removes the steady-state cost of signing, but a cold cache over a full batch
-// would otherwise serialize one csar-s3 round trip per storage key.
 func (h *Handler) browserUserItems(ctx context.Context, provider string, users []store.ProviderUser) []browserUserItem {
 	out := make([]browserUserItem, len(users))
-
-	sem := make(chan struct{}, avatarResolveConcurrency)
-	var wg sync.WaitGroup
 	for i := range users {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			out[i] = h.browserUserItem(ctx, provider, &users[i])
-		}(i)
+		out[i] = h.browserUserItem(ctx, provider, &users[i])
 	}
-	wg.Wait()
-
 	return out
 }
 
 func (h *Handler) browserUserItem(ctx context.Context, provider string, u *store.ProviderUser) browserUserItem {
-	avatarURL, avatarPreviewURL := h.resolveAvatarURLs(ctx, u.AvatarStorageKey, u.AvatarPreviewStorageKey, u.AvatarURL)
 	return browserUserItem{
-		ID:               u.ID.String(),
-		Provider:         provider,
-		ProviderUserID:   u.ProviderUserID,
-		DisplayName:      u.DisplayName,
-		Username:         providerUsername(u.ProviderMetadata),
-		AvatarURL:        avatarURL,
-		AvatarPreviewURL: avatarPreviewURL,
+		ID:             u.ID.String(),
+		Provider:       provider,
+		ProviderUserID: u.ProviderUserID,
+		DisplayName:    u.DisplayName,
+		Username:       providerUsername(u.ProviderMetadata),
 	}
 }
 

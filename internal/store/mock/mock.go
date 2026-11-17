@@ -212,21 +212,6 @@ func (s *Store) UpdateUserProfile(_ context.Context, userID uuid.UUID, displayNa
 	return nil
 }
 
-func (s *Store) UpdateUserAvatar(_ context.Context, userID uuid.UUID, avatar store.ManagedAvatar) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	u, ok := s.users[userID]
-	if !ok {
-		return store.ErrNotFound
-	}
-	u.AvatarStorageKey = avatar.DefaultStorageKey
-	u.AvatarPreviewStorageKey = avatar.PreviewStorageKey
-	u.AvatarMasterStorageKey = avatar.MasterStorageKey
-	u.AvatarURL = ""
-	u.UpdatedAt = time.Now()
-	return nil
-}
-
 func (s *Store) GetOAuthAccount(_ context.Context, provider, providerUserID string) (*store.OAuthAccount, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -374,7 +359,7 @@ func (s *Store) DeleteEmailOAuthAccount(_ context.Context, userID uuid.UUID, ema
 //  2. Verified email match
 //  3. Verified phone match (even if unverified email conflicts)
 //  4. Create new user
-func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, phone, displayName, avatarURL string) (*store.User, store.FindOrCreateResult, error) {
+func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, email, phone, displayName string) (*store.User, store.FindOrCreateResult, error) {
 	if err := store.CanonicalizeOAuthAccount(acct); err != nil {
 		return nil, 0, err
 	}
@@ -392,7 +377,7 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 		existing.ExpiresAt = acct.ExpiresAt
 		existing.Email = acct.Email
 		existing.DisplayName = acct.DisplayName
-		existing.AvatarURL = acct.AvatarURL
+
 		existing.EmailVerified = acct.EmailVerified
 		_ = s.UpdateOAuthAccount(ctx, existing)
 		user, _ := s.GetUserByID(ctx, existing.UserID)
@@ -437,7 +422,6 @@ func (s *Store) FindOrCreateUser(ctx context.Context, acct *store.OAuthAccount, 
 		Email:       email,
 		Phone:       phone,
 		DisplayName: displayName,
-		AvatarURL:   avatarURL,
 	}
 	created, err := s.CreateUser(ctx, newUser)
 	if err != nil {
@@ -461,7 +445,7 @@ func (s *Store) LinkOAuthAccount(ctx context.Context, userID uuid.UUID, acct *st
 			existing.ExpiresAt = acct.ExpiresAt
 			existing.Email = acct.Email
 			existing.DisplayName = acct.DisplayName
-			existing.AvatarURL = acct.AvatarURL
+
 			existing.EmailVerified = acct.EmailVerified
 			return s.UpdateOAuthAccount(ctx, existing)
 		}
@@ -971,12 +955,9 @@ func (s *Store) SearchUsers(_ context.Context, params store.UserSearchParams) ([
 
 		ranked = append(ranked, rankedUser{
 			result: store.UserSearchResult{
-				ID:                      u.ID,
-				Email:                   u.Email,
-				DisplayName:             u.DisplayName,
-				AvatarStorageKey:        u.AvatarStorageKey,
-				AvatarPreviewStorageKey: u.AvatarPreviewStorageKey,
-				AvatarURL:               u.AvatarURL,
+				ID:          u.ID,
+				Email:       u.Email,
+				DisplayName: u.DisplayName,
 			},
 			rank: rank,
 		})
@@ -1178,7 +1159,7 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	// Smart profile merge: capture source values, clear unique fields on source,
 	// then fill target gaps — mirrors the Postgres path.
 	srcEmail, srcPhone := source.Email, source.Phone
-	srcDisplayName, srcAvatarStorageKey, srcAvatarPreviewStorageKey, srcAvatarMasterStorageKey, srcAvatarURL := source.DisplayName, source.AvatarStorageKey, source.AvatarPreviewStorageKey, source.AvatarMasterStorageKey, source.AvatarURL
+	srcDisplayName := source.DisplayName
 
 	source.Email = ""
 	source.Phone = ""
@@ -1191,14 +1172,6 @@ func (s *Store) MergeUsers(_ context.Context, targetID, sourceID uuid.UUID) erro
 	}
 	if target.DisplayName == "" && srcDisplayName != "" {
 		target.DisplayName = srcDisplayName
-	}
-	if target.AvatarStorageKey == "" && srcAvatarStorageKey != "" {
-		target.AvatarStorageKey = srcAvatarStorageKey
-		target.AvatarPreviewStorageKey = srcAvatarPreviewStorageKey
-		target.AvatarMasterStorageKey = srcAvatarMasterStorageKey
-		target.AvatarURL = ""
-	} else if target.AvatarURL == "" && srcAvatarURL != "" {
-		target.AvatarURL = srcAvatarURL
 	}
 	target.UpdatedAt = now
 

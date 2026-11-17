@@ -77,10 +77,9 @@ func (s *Store) CreateLegacyUser(ctx context.Context, u *store.User, accounts []
 	now := time.Now()
 	created.CreatedAt, created.UpdatedAt = now, now
 	if _, err := tx.Exec(ctx,
-		`INSERT INTO users (id, display_name, avatar_storage_key, avatar_preview_storage_key, avatar_master_storage_key,
-		                    avatar_url, created_at, updated_at)
-		 VALUES ($1, $2, '', '', '', $3, $4, $5)`,
-		created.ID, created.DisplayName, created.AvatarURL, created.CreatedAt, created.UpdatedAt,
+		`INSERT INTO users (id, display_name, created_at, updated_at)
+		 VALUES ($1, $2, $3, $4)`,
+		created.ID, created.DisplayName, created.CreatedAt, created.UpdatedAt,
 	); err != nil {
 		return nil, fmt.Errorf("creating legacy user: %w", err)
 	}

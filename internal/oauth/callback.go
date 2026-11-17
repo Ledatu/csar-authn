@@ -124,7 +124,6 @@ func CallbackHandler(
 			ProviderUserID: gothUser.UserID,
 			Email:          normalizedEmail,
 			DisplayName:    gothUser.Name,
-			AvatarURL:      gothUser.AvatarURL,
 			AccessToken:    gothUser.AccessToken,
 			RefreshToken:   gothUser.RefreshToken,
 			EmailVerified:  emailVerified,
@@ -171,7 +170,7 @@ func CallbackHandler(
 			return
 		}
 
-		handleLoginCallback(w, r, st, sessMgr, oauthMgr, cookieName, cookieDomain, cookieSecure, cookieSameSite, acct, normalizedEmail, phone, gothUser.Name, gothUser.AvatarURL, provider, logger)
+		handleLoginCallback(w, r, st, sessMgr, oauthMgr, cookieName, cookieDomain, cookieSecure, cookieSameSite, acct, normalizedEmail, phone, gothUser.Name, provider, logger)
 	})
 }
 
@@ -185,12 +184,12 @@ func handleLoginCallback(
 	cookieSecure bool,
 	cookieSameSite http.SameSite,
 	acct *store.OAuthAccount,
-	email, phone, displayName, avatarURL, provider string,
+	email, phone, displayName, provider string,
 	logger *slog.Logger,
 ) {
 	frontendURL := resolveRedirectURL(r, w, oauthMgr, cookieSecure, cookieSameSite)
 
-	user, result, err := st.FindOrCreateUser(r.Context(), acct, email, phone, displayName, avatarURL)
+	user, result, err := st.FindOrCreateUser(r.Context(), acct, email, phone, displayName)
 	if err != nil {
 		if errors.Is(err, store.ErrUnverifiedEmailConflict) {
 			logger.Warn("unverified email conflicts with existing user",

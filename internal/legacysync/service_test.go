@@ -141,7 +141,7 @@ func TestServiceApply_LinksAndCreatesWithoutContactData(t *testing.T) {
 	req := &Request{GeneratedAt: now, Users: []LegacyUser{
 		{LegacyID: 111, TelegramID: "111", YandexID: "ya-alice"},
 		{LegacyID: 555, TelegramID: "555", YandexID: "ya-new", FirstName: " Anna ", LastName: "Petrova", Username: "anna",
-			PhotoURL: "https://t.me/i/userpic/320/a.jpg", Email: "anna@example.com", Phone: "+79990001122"},
+			Email: "anna@example.com", Phone: "+79990001122"},
 	}}
 
 	report, err := svc.Apply(context.Background(), req, Options{MaxUsers: 10}, ApplyOptions{
@@ -170,7 +170,7 @@ func TestServiceApply_LinksAndCreatesWithoutContactData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.DisplayName != "Anna Petrova" || created.AvatarURL != "https://t.me/i/userpic/320/a.jpg" || created.Email != "" || created.Phone != "" {
+	if created.DisplayName != "Anna Petrova" || created.Email != "" || created.Phone != "" {
 		t.Fatalf("created user = %+v", created)
 	}
 	ya, err := st.GetOAuthAccount(ctx, ProviderYandex, "ya-new")
@@ -243,16 +243,14 @@ func TestLegacyProfile(t *testing.T) {
 	cases := []struct {
 		user LegacyUser
 		name string
-		url  string
 	}{
-		{LegacyUser{FirstName: "Anna", Username: "anna"}, "Anna", ""},
-		{LegacyUser{Username: "@anna", PhotoURL: "javascript:alert(1)"}, "@anna", ""},
-		{LegacyUser{PhotoURL: "http://cdn.example/a.png"}, "", "http://cdn.example/a.png"},
-		{LegacyUser{PhotoURL: "https:///no-host"}, "", ""},
+		{LegacyUser{FirstName: "Anna", Username: "anna"}, "Anna"},
+		{LegacyUser{Username: "@anna"}, "@anna"},
+		{LegacyUser{}, ""},
 	}
 	for _, tc := range cases {
 		got := legacyProfile(tc.user)
-		if got.DisplayName != tc.name || got.AvatarURL != tc.url || got.Email != "" || got.Phone != "" {
+		if got.DisplayName != tc.name || got.Email != "" || got.Phone != "" {
 			t.Fatalf("legacyProfile(%+v) = %+v", tc.user, got)
 		}
 	}
