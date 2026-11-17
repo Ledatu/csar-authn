@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/url"
 	"strings"
 	"time"
 
@@ -201,15 +200,7 @@ func legacyProfile(u LegacyUser) *store.User {
 	if name == "" && u.Username != "" {
 		name = "@" + strings.TrimPrefix(u.Username, "@")
 	}
-	return &store.User{DisplayName: name, AvatarURL: safeAvatarURL(u.PhotoURL)}
-}
-
-func safeAvatarURL(raw string) string {
-	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.Host == "" || len(raw) > 2048 {
-		return ""
-	}
-	return parsed.String()
+	return &store.User{DisplayName: name}
 }
 
 func (s *Service) loadState(ctx context.Context, users []LegacyUser, overrides map[int64]string) (State, error) {

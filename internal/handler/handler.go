@@ -35,7 +35,6 @@ type Handler struct {
 	emailOTPSender  emailotp.Sender
 	stsHandler      *sts.Handler   // nil when STS is not configured
 	authzClient     *AuthzClient   // nil when authz is not configured
-	avatarClient    AvatarService  // nil when avatar storage is not configured
 	auditRecorder   audit.Recorder // nil when audit is not configured
 	legacyUsersSync *legacysync.Service
 	logger          *slog.Logger
@@ -44,7 +43,7 @@ type Handler struct {
 
 // New creates a Handler with all dependencies.
 // stsHandler, authzClient, and auditRecorder may be nil when their features are not enabled.
-func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, emailOTPSender emailotp.Sender, stsHandler *sts.Handler, authzClient *AuthzClient, avatarClient AvatarService, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
+func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionManager, oauthMgr *oauth.Manager, passkeySvc *passkey.Service, emailOTPSender emailotp.Sender, stsHandler *sts.Handler, authzClient *AuthzClient, auditRecorder audit.Recorder, logger *slog.Logger, cfg *config.Config) *Handler {
 	h := &Handler{
 		store:           st,
 		sessionMgr:      sessionMgr,
@@ -54,7 +53,6 @@ func New(st store.Store, sessionMgr *session.Manager, sessMgr *session.SessionMa
 		emailOTPSender:  emailOTPSender,
 		stsHandler:      stsHandler,
 		authzClient:     authzClient,
-		avatarClient:    avatarClient,
 		auditRecorder:   auditRecorder,
 		legacyUsersSync: legacysync.NewService(st),
 		logger:          logger,
@@ -112,11 +110,6 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Current user info: GET /auth/me
 	mux.HandleFunc("GET /auth/me", h.handleMe)
 	mux.HandleFunc("PATCH /auth/me/profile", h.handleUpdateProfile)
-	mux.HandleFunc("POST /auth/me/avatar/upload-intent", h.handleAvatarUploadIntent)
-	mux.HandleFunc("POST /auth/me/avatar/upload-set-intent", h.handleAvatarUploadSetIntent)
-	mux.HandleFunc("POST /auth/me/avatar", h.handleFinalizeAvatar)
-	mux.HandleFunc("POST /auth/me/avatar/finalize-set", h.handleFinalizeAvatarSet)
-	mux.HandleFunc("DELETE /auth/me/avatar", h.handleDeleteAvatar)
 	mux.HandleFunc("DELETE /auth/me/emails", h.handleDeleteMeEmail)
 
 	// Directory reads for authenticated browsers. These need only a valid
@@ -253,27 +246,23 @@ func (h *Handler) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	type meResponse struct {
-		ID               string                   `json:"id"`
-		Email            string                   `json:"email,omitempty"`
-		Phone            string                   `json:"phone,omitempty"`
-		DisplayName      string                   `json:"display_name"`
-		AvatarURL        string                   `json:"avatar_url,omitempty"`
-		AvatarPreviewURL string                   `json:"avatar_preview_url,omitempty"`
-		PasskeysCount    int                      `json:"passkeys_count"`
-		Accounts         []linkedAccount          `json:"linked_accounts,omitempty"`
-		Attribution      attributionStateResponse `json:"attribution"`
-		ImpersonatedBy   *impersonatedBy          `json:"impersonated_by,omitempty"`
+		ID          string `json:"id"`
+		Email       string `json:"email,omitempty"`
+		Phone       string `json:"phone,omitempty"`
+		DisplayName string `json:"display_name"`
+
+		PasskeysCount  int                      `json:"passkeys_count"`
+		Accounts       []linkedAccount          `json:"linked_accounts,omitempty"`
+		Attribution    attributionStateResponse `json:"attribution"`
+		ImpersonatedBy *impersonatedBy          `json:"impersonated_by,omitempty"`
 	}
 
-	avatarURL, avatarPreviewURL := h.resolveAvatarURLs(r.Context(), user.AvatarStorageKey, user.AvatarPreviewStorageKey, user.AvatarURL)
 	resp := meResponse{
-		ID:               user.ID.String(),
-		Email:            user.Email,
-		Phone:            user.Phone,
-		DisplayName:      user.DisplayName,
-		AvatarURL:        avatarURL,
-		AvatarPreviewURL: avatarPreviewURL,
-		Attribution:      attributionStateResponse{},
+		ID:          user.ID.String(),
+		Email:       user.Email,
+		Phone:       user.Phone,
+		DisplayName: user.DisplayName,
+		Attribution: attributionStateResponse{},
 	}
 	if sess != nil && sess.ImpersonatorUserID != nil {
 		resp.ImpersonatedBy = &impersonatedBy{ID: sess.ImpersonatorUserID.String()}

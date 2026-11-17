@@ -20,7 +20,6 @@ func TestSearchUsers_MatchesAndExcludesMerged(t *testing.T) {
 		ID:          activeID,
 		Email:       "alice@example.com",
 		DisplayName: "Alice Example",
-		AvatarURL:   "https://example.com/alice.png",
 	})
 	s.SeedUser(&store.User{
 		ID:          uuid.MustParse("ffffffff-ffff-4fff-8fff-ffffffffffff"),
@@ -42,9 +41,7 @@ func TestSearchUsers_MatchesAndExcludesMerged(t *testing.T) {
 	if got[0].ID != activeID {
 		t.Fatalf("id = %s, want %s", got[0].ID, activeID)
 	}
-	if got[0].AvatarURL != "https://example.com/alice.png" {
-		t.Fatalf("avatar_url = %q", got[0].AvatarURL)
-	}
+
 }
 
 func TestSearchUsers_PrioritizesExactID(t *testing.T) {

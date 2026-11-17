@@ -30,7 +30,6 @@ func TestAdminUsers_ListOK(t *testing.T) {
 		ID:          uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
 		Email:       "alice@example.com",
 		DisplayName: "Alice Admin",
-		AvatarURL:   "https://example.com/alice.png",
 	})
 	st.SeedUser(&store.User{
 		ID:          uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
@@ -182,7 +181,6 @@ func TestServiceUsersResolve_OK(t *testing.T) {
 	st.SeedUser(&store.User{
 		ID:          userID,
 		DisplayName: "Alice Admin",
-		AvatarURL:   "https://example.com/alice.png",
 	})
 
 	body := `{"ids":["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","not-a-uuid","aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]}`

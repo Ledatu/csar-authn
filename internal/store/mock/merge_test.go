@@ -21,7 +21,7 @@ func setupMergeFixture(t *testing.T) (*mock.Store, *store.User, *store.User) {
 	now := time.Now()
 
 	userA := &store.User{ID: uuid.New(), Email: "a@example.com", DisplayName: "User A", CreatedAt: now.Add(-2 * time.Hour)}
-	userB := &store.User{ID: uuid.New(), Phone: "+1111111111", DisplayName: "User B", AvatarURL: "https://avatar.b", CreatedAt: now.Add(-time.Hour)}
+	userB := &store.User{ID: uuid.New(), Phone: "+1111111111", DisplayName: "User B", CreatedAt: now.Add(-time.Hour)}
 	s.SeedUser(userA)
 	s.SeedUser(userB)
 
@@ -71,9 +71,6 @@ func TestMergeUsers_HappyPath(t *testing.T) {
 	target, _ := s.GetUserByID(ctx, userA.ID)
 	if target.Phone != "+1111111111" {
 		t.Fatalf("expected phone to be merged, got %q", target.Phone)
-	}
-	if target.AvatarURL != "https://avatar.b" {
-		t.Fatalf("expected avatar to be merged from source, got %q", target.AvatarURL)
 	}
 
 	// B's sessions should be revoked.
@@ -220,7 +217,7 @@ func TestMergeUsers_ProfileSmartMerge(t *testing.T) {
 	ctx := context.Background()
 
 	target := &store.User{ID: uuid.New(), Email: "keep@example.com", DisplayName: "Keep"}
-	source := &store.User{ID: uuid.New(), Email: "discard@example.com", Phone: "+999", AvatarURL: "https://new-avatar"}
+	source := &store.User{ID: uuid.New(), Email: "discard@example.com", Phone: "+999"}
 	s.SeedUser(target)
 	s.SeedUser(source)
 
@@ -242,7 +239,5 @@ func TestMergeUsers_ProfileSmartMerge(t *testing.T) {
 	if merged.DisplayName != "Keep" {
 		t.Fatalf("display_name should be kept, got %q", merged.DisplayName)
 	}
-	if merged.AvatarURL != "https://new-avatar" {
-		t.Fatalf("avatar_url should be filled from source, got %q", merged.AvatarURL)
-	}
+
 }

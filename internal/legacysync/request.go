@@ -26,7 +26,6 @@ type LegacyUser struct {
 	FirstName  string `json:"first_name,omitempty"`
 	LastName   string `json:"last_name,omitempty"`
 	Username   string `json:"username,omitempty"`
-	PhotoURL   string `json:"photo_url,omitempty"`
 	Email      string `json:"email,omitempty"`
 	Phone      string `json:"phone,omitempty"`
 }

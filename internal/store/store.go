@@ -51,14 +51,7 @@ type User struct {
 	Email       string
 	Phone       string
 	DisplayName string
-	// AvatarStorageKey is the canonical, user-managed avatar reference stored in csar-s3.
-	AvatarStorageKey string
-	// AvatarPreviewStorageKey points to the lightweight preview avatar variant.
-	AvatarPreviewStorageKey string
-	// AvatarMasterStorageKey points to the highest-quality managed avatar variant.
-	AvatarMasterStorageKey string
-	// AvatarURL keeps legacy/provider-backed avatar URLs for backward-compatible reads.
-	AvatarURL  string
+
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
 	MergedInto *uuid.UUID
@@ -79,12 +72,12 @@ type MergeRecord struct {
 
 // OAuthAccount links a provider identity to an internal user.
 type OAuthAccount struct {
-	Provider         string
-	ProviderUserID   string
-	UserID           uuid.UUID
-	Email            string
-	DisplayName      string
-	AvatarURL        string
+	Provider       string
+	ProviderUserID string
+	UserID         uuid.UUID
+	Email          string
+	DisplayName    string
+
 	AccessToken      string
 	RefreshToken     string
 	ExpiresAt        *time.Time
@@ -237,12 +230,9 @@ type UserSearchParams struct {
 
 // UserSearchResult is a browser-safe user summary for admin lookup flows.
 type UserSearchResult struct {
-	ID                      uuid.UUID
-	Email                   string
-	DisplayName             string
-	AvatarStorageKey        string
-	AvatarPreviewStorageKey string
-	AvatarURL               string
+	ID          uuid.UUID
+	Email       string
+	DisplayName string
 }
 
 // ResolvedUser pairs the id a caller asked for with the canonical user it
@@ -260,13 +250,6 @@ type ProviderUser struct {
 	User
 	ProviderUserID   string
 	ProviderMetadata map[string]interface{}
-}
-
-// ManagedAvatar stores the complete managed avatar variant set for a user.
-type ManagedAvatar struct {
-	DefaultStorageKey string
-	PreviewStorageKey string
-	MasterStorageKey  string
 }
 
 // ServiceAccount represents an STS service account stored in the database.
@@ -320,10 +303,6 @@ type Store interface {
 	// UpdateUserProfile updates only the self-service editable profile fields.
 	UpdateUserProfile(ctx context.Context, userID uuid.UUID, displayName string) error
 
-	// UpdateUserAvatar updates the managed avatar storage keys.
-	// Implementations should clear any legacy avatar URL when this path is used.
-	UpdateUserAvatar(ctx context.Context, userID uuid.UUID, avatar ManagedAvatar) error
-
 	// GetOAuthAccount looks up a linked account by (provider, provider_user_id).
 	// Returns ErrNotFound if no link exists.
 	GetOAuthAccount(ctx context.Context, provider, providerUserID string) (*OAuthAccount, error)
@@ -357,7 +336,7 @@ type Store interface {
 	//  3. If email non-empty, check users by email; auto-link if verified
 	//  4. If phone non-empty, check users by phone; auto-link (phone is verified)
 	//  5. If no match, create user + oauth_account in a transaction
-	FindOrCreateUser(ctx context.Context, acct *OAuthAccount, email, phone, displayName, avatarURL string) (*User, FindOrCreateResult, error)
+	FindOrCreateUser(ctx context.Context, acct *OAuthAccount, email, phone, displayName string) (*User, FindOrCreateResult, error)
 
 	// TryLegacyUsersSyncLock takes the cross-replica lock for one legacy users
 	// sync apply run; ok is false when another run holds it.

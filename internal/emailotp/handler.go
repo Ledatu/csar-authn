@@ -211,7 +211,7 @@ func (h *Handler) HandleVerify(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) finalizeLogin(w http.ResponseWriter, r *http.Request, challenge *store.EmailOTPChallenge, acct *store.OAuthAccount) {
 	ctx := r.Context()
-	user, result, err := h.store.FindOrCreateUser(ctx, acct, challenge.Email, "", challenge.Email, "")
+	user, result, err := h.store.FindOrCreateUser(ctx, acct, challenge.Email, "", challenge.Email)
 	if err != nil {
 		h.logger.Error("find or create user by email OTP", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

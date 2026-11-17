@@ -58,7 +58,7 @@ func (h *Handler) HandleFinalize(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) finalizeLogin(w http.ResponseWriter, r *http.Request, v *store.BotVerification, acct *store.OAuthAccount) {
 	ctx := r.Context()
 
-	user, result, err := h.store.FindOrCreateUser(ctx, acct, "", "", v.ProviderDisplay, "")
+	user, result, err := h.store.FindOrCreateUser(ctx, acct, "", "", v.ProviderDisplay)
 	if err != nil {
 		h.logger.Error("find or create user", "error", err)
 		http.Error(w, "internal error", http.StatusInternalServerError)

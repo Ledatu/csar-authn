@@ -20,7 +20,7 @@ func TestFindOrCreateUser_NewUser(t *testing.T) {
 		EmailVerified:  true,
 	}
 
-	user, result, err := s.FindOrCreateUser(context.Background(), acct, "alice@example.com", "", "Alice", "")
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "alice@example.com", "", "Alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestFindOrCreateUser_ExistingOAuthLogin(t *testing.T) {
 		EmailVerified:  true,
 	}
 
-	user1, _, _ := s.FindOrCreateUser(context.Background(), acct, "alice@example.com", "", "Alice", "")
+	user1, _, _ := s.FindOrCreateUser(context.Background(), acct, "alice@example.com", "", "Alice")
 
 	acct2 := &store.OAuthAccount{
 		Provider:       "google",
@@ -50,7 +50,7 @@ func TestFindOrCreateUser_ExistingOAuthLogin(t *testing.T) {
 		EmailVerified:  true,
 		AccessToken:    "new-token",
 	}
-	user2, result, err := s.FindOrCreateUser(context.Background(), acct2, "alice@example.com", "", "Alice", "")
+	user2, result, err := s.FindOrCreateUser(context.Background(), acct2, "alice@example.com", "", "Alice")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,7 +77,7 @@ func TestFindOrCreateUser_VerifiedEmailAutoLink(t *testing.T) {
 		EmailVerified:  true,
 	}
 
-	user, result, err := s.FindOrCreateUser(context.Background(), acct, "bob@example.com", "", "Bob", "")
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "bob@example.com", "", "Bob")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +104,7 @@ func TestFindOrCreateUser_UnverifiedEmailConflict_NoPhone(t *testing.T) {
 		EmailVerified:  false,
 	}
 
-	_, _, err := s.FindOrCreateUser(context.Background(), acct, "carol@example.com", "", "Carol", "")
+	_, _, err := s.FindOrCreateUser(context.Background(), acct, "carol@example.com", "", "Carol")
 	if !errors.Is(err, store.ErrUnverifiedEmailConflict) {
 		t.Fatalf("expected ErrUnverifiedEmailConflict, got %v", err)
 	}
@@ -126,7 +126,7 @@ func TestFindOrCreateUser_UnverifiedEmail_PhoneFallback(t *testing.T) {
 		EmailVerified:  false,
 	}
 
-	user, result, err := s.FindOrCreateUser(context.Background(), acct, "dave@example.com", "+1234567890", "Dave", "")
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "dave@example.com", "+1234567890", "Dave")
 	if err != nil {
 		t.Fatalf("expected phone fallback to succeed, got %v", err)
 	}
@@ -151,7 +151,7 @@ func TestFindOrCreateUser_PhoneMatch(t *testing.T) {
 		ProviderUserID: "t-2",
 	}
 
-	user, result, err := s.FindOrCreateUser(context.Background(), acct, "", "+9876543210", "TeleUser", "")
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "", "+9876543210", "TeleUser")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -172,9 +172,9 @@ func TestFindOrCreateUser_Idempotent(t *testing.T) {
 		EmailVerified:  true,
 	}
 
-	u1, r1, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve", "")
-	u2, r2, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve", "")
-	u3, r3, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve", "")
+	u1, r1, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve")
+	u2, r2, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve")
+	u3, r3, _ := s.FindOrCreateUser(context.Background(), acct, "eve@example.com", "", "Eve")
 
 	if r1 != store.ResultCreatedNewUser {
 		t.Fatalf("first call: expected ResultCreatedNewUser, got %d", r1)
@@ -196,7 +196,7 @@ func TestFindOrCreateUser_CanonicalizesEmail(t *testing.T) {
 		EmailVerified:  true,
 	}
 
-	user, result, err := s.FindOrCreateUser(context.Background(), acct, "Mixed@Example.COM", "", "Mixed", "")
+	user, result, err := s.FindOrCreateUser(context.Background(), acct, "Mixed@Example.COM", "", "Mixed")
 	if err != nil {
 		t.Fatal(err)
 	}
