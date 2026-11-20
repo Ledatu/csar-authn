@@ -95,8 +95,13 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		t.Fatal("consent binding cookie")
 	}
 	decision := "approve"
+	selection := map[string]any{"seller_id": seller}
 	decide := func(origin string, addBrowserCookie bool) *httptest.ResponseRecorder {
-		payload, _ := json.Marshal(map[string]string{"client_id": client, "decision": decision, "seller_id": seller, "request": dest.Query().Get("mcp_request")})
+		fields := map[string]any{"client_id": client, "decision": decision, "request": dest.Query().Get("mcp_request")}
+		for k, v := range selection {
+			fields[k] = v
+		}
+		payload, _ := json.Marshal(fields)
 		r := httptest.NewRequest("POST", "/oauth/mcp/consent", strings.NewReader(string(payload)))
 		r.AddCookie(session)
 		r.Header.Set("Origin", origin)
@@ -126,11 +131,26 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	if w.Code != 200 {
 		t.Fatalf("approve=%d", w.Code)
 	}
-	var result struct{ Redirect string }
+	var result struct {
+		Redirect string
+		GrantID  string `json:"grant_id"`
+	}
 	if err = json.Unmarshal(w.Body.Bytes(), &result); err != nil {
 		t.Fatal(err)
 	}
 	callback, _ := url.Parse(result.Redirect)
+	if _, err := uuid.Parse(result.GrantID); err != nil || callback.Query().Has("grant_id") {
+		t.Fatal("expected a grant reference only in the seller response")
+	}
+	grants, err := db.ListMCP(t.Context(), testUserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, grant := range grants {
+		if grant.ID.String() == result.GrantID {
+			t.Fatal("unredeemed connection is listed as active")
+		}
+	}
 	if callback.Query().Get("state") != "client-state" || callback.Query().Get("iss") != mcpIssuer {
 		t.Fatal("incorrect callback")
 	}
@@ -159,8 +179,12 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		Grant  string `json:"credential_id"`
 		Seller string `json:"seller_id"`
 	}
-	intro := func(op, token string) response {
-		body, _ := json.Marshal(map[string]string{"token": token})
+	intro := func(op, token string, sellers ...string) response {
+		data := map[string]string{"token": token}
+		if len(sellers) > 0 {
+			data["seller_id"] = sellers[0]
+		}
+		body, _ := json.Marshal(data)
 		r := httptest.NewRequest("POST", "/internal/seller-mcp/"+op, strings.NewReader(string(body)))
 		cert := &x509.Certificate{Subject: pkix.Name{CommonName: sellerRouterCN}}
 		r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{cert, ca}}}
@@ -172,6 +196,9 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		return out
 	}
 	first := intro("delegate", access.Token)
+	if first.Grant != result.GrantID {
+		t.Fatal("receipt did not identify the redeemed connection")
+	}
 	if !first.Active || first.Seller != seller || first.Proof == access.Token || intro("consume", access.Token).Active || intro("delegate", first.Proof).Active {
 		t.Fatal("resource isolation")
 	}
@@ -208,18 +235,79 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	dest, _ = url.Parse(begin.Header().Get("Location"))
 	cookie = begin.Result().Cookies()[0]
 	decision = "deny"
+	result.GrantID = ""
 	w = decide("https://seller.aurum-sky.net", true)
 	if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
 		t.Fatal("deny response")
 	}
 	callback, _ = url.Parse(result.Redirect)
-	if callback.Query().Get("error") != "access_denied" || callback.Query().Has("code") {
+	if callback.Query().Get("error") != "access_denied" || callback.Query().Has("code") || result.GrantID != "" {
 		t.Fatal("denied callback")
 	}
 	decision = "approve"
 	if decide("https://seller.aurum-sky.net", true).Code != 400 {
 		t.Fatal("denied transaction reused")
 	}
+	second, future := uuid.NewString(), uuid.NewString()
+	th.mock.checkAccessFn = func(_ context.Context, r *pb.CheckAccessRequest) (*pb.CheckAccessResponse, error) {
+		return &pb.CheckAccessResponse{Allowed: r.Subject == testUserID.String() && (r.ScopeId == "wildberries:"+seller || r.ScopeId == "wildberries:"+second)}, nil
+	}
+	for _, all := range []bool{false, true} {
+		begin = send(httptest.NewRequest("GET", "/oauth/mcp/authorize?"+q.Encode(), nil))
+		dest, _ = url.Parse(begin.Header().Get("Location"))
+		cookie = begin.Result().Cookies()[0]
+		selection = map[string]any{"all_campaigns": true, "seller_ids": []string{seller}}
+		if decide(sellerOrigin, true).Code != 400 {
+			t.Fatal("accepted conflicting selection")
+		}
+		selection = map[string]any{"seller_ids": []string{future}}
+		if decide(sellerOrigin, true).Code != 403 {
+			t.Fatal("accepted unauthorized selection")
+		}
+		selection = map[string]any{"seller_ids": []string{seller, second}}
+		if all {
+			selection = map[string]any{"all_campaigns": true}
+		}
+		approved := decide(sellerOrigin, true)
+		if approved.Code != 200 || json.Unmarshal(approved.Body.Bytes(), &result) != nil {
+			t.Fatalf("account consent %d", approved.Code)
+		}
+		callback, _ = url.Parse(result.Redirect)
+		token := redeem(verifier, mcpResource)
+		if token.Code != 200 || json.Unmarshal(token.Body.Bytes(), &access) != nil {
+			t.Fatal("redeem account grant")
+		}
+		grant := uuid.MustParse(result.GrantID)
+		stored, err := db.ActiveMCPSelection(t.Context(), testUserID, grant)
+		if err != nil || !stored.Allows(second) || stored.Allows(future) != all {
+			t.Fatal("wrong stored selection")
+		}
+		provisional := intro("delegate-account", access.Token)
+		if !provisional.Active || intro("consume", provisional.Proof, second).Active {
+			t.Fatal("unresolved account delegation authorized report")
+		}
+		if !intro("consume-discovery", intro("delegate-account", access.Token).Proof).Active {
+			t.Fatal("account discovery failed")
+		}
+		proof := "aurum_dlg_" + randomToken()
+		if err = db.IssueMCPReport(t.Context(), testUserID, grant, second, hashValue(proof)); err != nil {
+			t.Fatal(err)
+		}
+		if intro("consume", proof, seller).Active {
+			t.Fatal("proof changed cabinet")
+		}
+		proof = "aurum_dlg_" + randomToken()
+		if err = db.IssueMCPReport(t.Context(), testUserID, grant, second, hashValue(proof)); err != nil {
+			t.Fatal(err)
+		}
+		if !intro("consume", proof, second).Active || intro("consume", proof, second).Active {
+			t.Fatal("exact one-use report proof")
+		}
+		if err = db.RevokeMCP(t.Context(), testUserID, grant); err != nil {
+			t.Fatal(err)
+		}
+	}
+
 }
 
 func TestDelegationRequiresDedicatedRouterCA(t *testing.T) {

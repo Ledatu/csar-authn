@@ -158,29 +158,36 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) allowSellerScopes(w http.ResponseWriter, r *http.Request, owner uuid.UUID, seller string, scopes []string) bool {
-	if h.authzClient == nil {
-		httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
-		return false
-	}
 	for _, scope := range scopes {
 		action := "massAdvert.read"
 		if scope == store.APIKeyScopeAnalyticsRead {
 			action = "analytics.read"
 		}
-		access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
-			Subject: owner.String(), Resource: "campaign_module", Action: action,
-			ScopeType: "tenant", ScopeId: "wildberries:" + seller,
-		})
-		if err != nil || access == nil {
+		allowed, err := h.checkSellerAction(r, owner, seller, action)
+		if err != nil {
 			httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
 			return false
 		}
-		if !access.Allowed {
+		if !allowed {
 			httpx.WriteError(w, csarerrors.Forbidden("%s access required", scope))
 			return false
 		}
 	}
 	return true
+}
+
+func (h *Handler) checkSellerAction(r *http.Request, owner uuid.UUID, seller, action string) (bool, error) {
+	if h.authzClient == nil {
+		return false, errors.New("authorization unavailable")
+	}
+	access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
+		Subject: owner.String(), Resource: "campaign_module", Action: action,
+		ScopeType: "tenant", ScopeId: "wildberries:" + seller,
+	})
+	if err != nil || access == nil {
+		return false, errors.New("authorization unavailable")
+	}
+	return access.Allowed, nil
 }
 
 func requestedAPIKeyScopes(raw json.RawMessage) ([]string, error) {
