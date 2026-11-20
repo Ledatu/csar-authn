@@ -17,6 +17,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/httpx"
 	"golang.org/x/oauth2"
 )
@@ -73,6 +74,7 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 		return nil
 	})
 	o := &sellerOAuth{Handler: h, grants: grants, clientID: clientID, redirect: redirect, routerCA: ca}
+	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
 	mux.HandleFunc("POST /svc/authn/mcp/eligible", o.eligible)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", o.metadata)
@@ -107,7 +109,7 @@ func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                         oauthAPI + "/authorize",
 		"token_endpoint":                                 oauthAPI + "/token",
 		"response_types_supported":                       []string{"code"},
-		"grant_types_supported":                          []string{"authorization_code"},
+		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":               []string{"S256"},
 		"scopes_supported":                               []string{store.APIKeyScopeAnalyticsRead},
 		"token_endpoint_auth_methods_supported":          []string{"none"},
@@ -163,14 +165,15 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(consentCookie)
 	var in struct {
 		store.MCPSelection
-		Request  string `json:"request"`
-		Seller   string `json:"seller_id"`
-		Decision string `json:"decision"`
-		Client   string `json:"client_id"`
+		SessionDays int    `json:"session_days"`
+		Request     string `json:"request"`
+		Seller      string `json:"seller_id"`
+		Decision    string `json:"decision"`
+		Client      string `json:"client_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
-		in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
+		(in.SessionDays != 0 && in.SessionDays != store.MCPConnectionDays) || in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -200,7 +203,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
 	}
-	binding := store.MCPRequest{ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
+	binding := store.MCPRequest{SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
 	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_request")
@@ -236,17 +239,34 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.PostForm
-	if q.Get("grant_type") != "authorization_code" {
-		oauthError(w, 400, "unsupported_grant_type")
-		return
-	}
-	if q.Get("client_id") != o.clientID || q.Get("redirect_uri") != o.redirect || !validMCPResource(q.Get("resource")) ||
-		!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
+	access := "aurum_mcp_" + randomToken()
+	refresh := "aurum_refresh_" + randomToken()
+	var lifetime store.MCPTokenLifetime
+	var err error
+	if q.Get("client_id") != o.clientID {
 		oauthError(w, 400, "invalid_grant")
 		return
 	}
-	access := "aurum_mcp_" + randomToken()
-	err := o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), o.clientID, o.redirect, oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access))
+	switch q.Get("grant_type") {
+	case "authorization_code":
+		if q.Get("redirect_uri") != o.redirect || !validMCPResource(q.Get("resource")) ||
+			!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
+		lifetime, err = o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), o.clientID, o.redirect, oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access), hashValue(refresh))
+	case "refresh_token":
+		// Omitted scope/resource retain the original single-audience grant.
+		if (q.Has("resource") && !validMCPResource(q.Get("resource"))) || (q.Has("scope") && q.Get("scope") != store.APIKeyScopeAnalyticsRead) ||
+			!strings.HasPrefix(q.Get("refresh_token"), "aurum_refresh_") || len(q.Get("refresh_token")) != len("aurum_refresh_")+43 {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
+		lifetime, err = o.grants.RefreshMCP(r.Context(), o.clientID, hashValue(q.Get("refresh_token")), hashValue(access), hashValue(refresh))
+	default:
+		oauthError(w, 400, "unsupported_grant_type")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_grant")
 		return
@@ -255,7 +275,11 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"access_token": access, "token_type": "Bearer", "scope": store.APIKeyScopeAnalyticsRead, "expires_in": 3600})
+	response := map[string]any{"access_token": access, "token_type": "Bearer", "scope": store.APIKeyScopeAnalyticsRead, "expires_in": lifetime.Seconds}
+	if lifetime.Renewable {
+		response["refresh_token"] = refresh
+	}
+	httpx.WriteJSON(w, 200, response)
 }
 
 // The listener also trusts the general service CA. Delegation requires a chain
@@ -277,22 +301,47 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 403, "access_denied")
 		return
 	}
-	var body struct {
-		Token  string `json:"token"`
-		Seller string `json:"seller_id"`
+	r.Body = http.MaxBytesReader(w, r.Body, 8192)
+	var request authntokens.DelegationRequest
+	portable := r.URL.Path == "/internal/seller-mcp/v1/introspect"
+	singleExchange := r.URL.Path == "/internal/seller-mcp/delegate"
+	if portable {
+		if httpx.ReadJSON(r, &request) != nil {
+			oauthError(w, 400, "invalid_request")
+			return
+		}
+		if request.Audience != mcpResource || request.Scope != store.APIKeyScopeAnalyticsRead ||
+			!authntokens.IsDelegation(request.Purpose) || (request.Purpose == authntokens.GrantResource) != (request.ResourceID != "") {
+			httpx.WriteJSON(w, 200, authntokens.DelegationResult{})
+			return
+		}
+	} else {
+		var body struct {
+			Token  string `json:"token"`
+			Seller string `json:"seller_id"`
+		}
+		if httpx.ReadJSON(r, &body) != nil {
+			oauthError(w, 400, "invalid_request")
+			return
+		}
+		request.Token, request.ResourceID = body.Token, body.Seller
+		switch r.URL.Path {
+		case "/internal/seller-mcp/delegate-account", "/internal/seller-mcp/delegate":
+			request.Purpose = authntokens.GrantExchange
+		case "/internal/seller-mcp/consume-discovery":
+			request.Purpose = authntokens.GrantDiscovery
+		case "/internal/seller-mcp/consume":
+			request.Purpose = authntokens.GrantResource
+		}
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 2048)
-	if httpx.ReadJSON(r, &body) != nil {
-		oauthError(w, 400, "invalid_request")
-		return
-	}
-	account := r.URL.Path == "/internal/seller-mcp/delegate-account"
-	delegate := account || r.URL.Path == "/internal/seller-mcp/delegate"
+	delegate := request.Purpose == authntokens.GrantExchange
+	account := delegate && !singleExchange
+	discovery := request.Purpose == authntokens.GrantDiscovery
 	prefix := "aurum_dlg_"
 	if delegate {
 		prefix = "aurum_mcp_"
 	}
-	if !strings.HasPrefix(body.Token, prefix) || len(body.Token) != len(prefix)+43 {
+	if !strings.HasPrefix(request.Token, prefix) || len(request.Token) != len(prefix)+43 {
 		httpx.WriteJSON(w, 200, map[string]bool{"active": false})
 		return
 	}
@@ -301,9 +350,9 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 	proof := ""
 	if delegate {
 		proof = "aurum_dlg_" + randomToken()
-		g, err = o.grants.DelegateMCP(r.Context(), hashValue(body.Token), hashValue(proof), account)
+		g, err = o.grants.DelegateMCP(r.Context(), hashValue(request.Token), hashValue(proof), account)
 	} else {
-		g, err = o.grants.ConsumeMCP(r.Context(), hashValue(body.Token))
+		g, err = o.grants.ConsumeMCP(r.Context(), hashValue(request.Token))
 	}
 	if errors.Is(err, store.ErrNotFound) {
 		httpx.WriteJSON(w, 200, map[string]bool{"active": false})
@@ -313,14 +362,13 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
-	discovery := r.URL.Path == "/internal/seller-mcp/consume-discovery"
 	if discovery && !g.DiscoveryOnly || delegate && !account && g.SellerID == "" {
 		httpx.WriteJSON(w, 200, map[string]bool{"active": false})
 		return
 	}
 	if !delegate && !discovery {
-		requested := body.Seller
-		if requested == "" {
+		requested := request.ResourceID
+		if !portable && requested == "" {
 			requested = g.SellerID
 		} // legacy single-cabinet gateway
 		if g.DiscoveryOnly || !validWBSellerID(requested) || !g.Allows(requested) ||
@@ -329,6 +377,14 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		g.SellerID = requested
+	}
+	if portable {
+		result := authntokens.DelegationResult{Active: true, Purpose: request.Purpose, Audience: mcpResource, Scope: store.APIKeyScopeAnalyticsRead, Subject: g.OwnerID.String(), CredentialID: g.ID.String(), ExpiresAt: g.ExpiresAt, DelegatedToken: proof, ResourceID: request.ResourceID}
+		if !discovery && g.SellerID != "" {
+			result.Tenant = "wildberries:" + g.SellerID
+		}
+		httpx.WriteJSON(w, http.StatusOK, result)
+		return
 	}
 	httpx.WriteJSON(w, 200, map[string]any{"active": true, "account_grant": account || discovery, "discovery": discovery, "subject": g.OwnerID, "credential_id": g.ID, "seller_id": g.SellerID, "scopes": []string{store.APIKeyScopeAnalyticsRead}, "expires_at": g.ExpiresAt, "delegated_token": proof})
 }

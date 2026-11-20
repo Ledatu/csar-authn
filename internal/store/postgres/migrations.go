@@ -433,6 +433,14 @@ ALTER TABLE seller_mcp_grants ALTER COLUMN seller_id DROP NOT NULL,
  (seller_id IS NULL AND all_campaigns AND cardinality(selected_ids)=0) OR
  (seller_id IS NULL AND NOT all_campaigns AND cardinality(selected_ids) BETWEEN 2 AND 256));
 `},
+	{Name: "025_mcp_refresh_sessions", Up: `
+ALTER TABLE seller_mcp_grants ADD COLUMN session_access_hash text UNIQUE, ADD COLUMN access_expires_at timestamptz;
+CREATE TABLE seller_mcp_refresh_tokens (
+ token_hash text PRIMARY KEY, grant_id uuid NOT NULL REFERENCES seller_mcp_grants(id) ON DELETE CASCADE, spent boolean NOT NULL DEFAULT false
+);
+CREATE INDEX seller_mcp_refresh_grant ON seller_mcp_refresh_tokens(grant_id);
+CREATE UNIQUE INDEX seller_mcp_refresh_current ON seller_mcp_refresh_tokens(grant_id) WHERE NOT spent;
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

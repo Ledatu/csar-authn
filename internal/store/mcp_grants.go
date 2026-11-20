@@ -9,7 +9,18 @@ import (
 )
 
 // MCPRequest binds the browser transaction to the pre-registered client and PKCE challenge.
-type MCPRequest struct{ ID, BrowserHash, ClientID, RedirectURI, Challenge, State string }
+type MCPRequest struct {
+	ID, BrowserHash, ClientID, RedirectURI, Challenge, State string
+	SessionDays                                              int
+}
+
+const MCPConnectionDays = 7
+const MCPAccessTTL = time.Hour
+
+type MCPTokenLifetime struct {
+	Seconds   int
+	Renewable bool
+}
 type MCPDecision struct {
 	RedirectURI, State string
 	GrantID            uuid.UUID
@@ -38,7 +49,8 @@ type MCPGrant struct {
 type MCPGrantStore interface {
 	BeginMCP(context.Context, MCPRequest) error
 	DecideMCP(ctx context.Context, request MCPRequest, owner uuid.UUID, selection MCPSelection, codeHash string) (MCPDecision, error)
-	RedeemMCP(ctx context.Context, codeHash, client, redirect, challenge, accessHash string) error
+	RedeemMCP(ctx context.Context, codeHash, client, redirect, challenge, accessHash, refreshHash string) (MCPTokenLifetime, error)
+	RefreshMCP(ctx context.Context, client, presentedHash, accessHash, refreshHash string) (MCPTokenLifetime, error)
 	DelegateMCP(ctx context.Context, accessHash, delegatedHash string, discoveryOnly bool) (MCPGrant, error)
 	ConsumeMCP(ctx context.Context, delegatedHash string) (MCPGrant, error)
 	IssueMCPReport(ctx context.Context, owner, grant uuid.UUID, seller, proofHash string) error
