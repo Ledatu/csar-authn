@@ -120,13 +120,7 @@ func (h *Handler) handleCreateImpersonationGrant(w http.ResponseWriter, r *http.
 		return
 	}
 
-	token, err := randomToken()
-	if err != nil {
-		h.logger.Error("failed to generate impersonation token", "error", err)
-		apierror.New("internal_error", http.StatusInternalServerError, "failed to create impersonation grant").Write(w)
-		return
-	}
-
+	token := randomToken()
 	now := time.Now().UTC()
 	adminID := uuid.MustParse(subject)
 	grant := &store.ImpersonationGrant{

@@ -2,11 +2,7 @@ package handler
 
 import (
 	"context"
-	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -69,18 +65,7 @@ func (h *Handler) handleQRLoginStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	scanToken, err := randomToken()
-	if err != nil {
-		h.logger.Error("failed to generate QR login scan token", "error", err)
-		apierror.New("internal_error", http.StatusInternalServerError, "failed to start QR login").Write(w)
-		return
-	}
-	desktopSecret, err := randomToken()
-	if err != nil {
-		h.logger.Error("failed to generate QR login desktop secret", "error", err)
-		apierror.New("internal_error", http.StatusInternalServerError, "failed to start QR login").Write(w)
-		return
-	}
+	scanToken, desktopSecret := randomToken(), randomToken()
 	qrURL, err := h.buildQRLoginURL(scanToken)
 	if err != nil {
 		h.logger.Error("failed to build QR login URL", "error", err)
@@ -378,19 +363,6 @@ func (h *Handler) buildQRLoginURL(scanToken string) (string, error) {
 	qrURL := u.ResolveReference(ref)
 	qrURL.RawQuery = url.Values{"token": []string{scanToken}}.Encode()
 	return qrURL.String(), nil
-}
-
-func randomToken() (string, error) {
-	buf := make([]byte, 32)
-	if _, err := rand.Read(buf); err != nil {
-		return "", err
-	}
-	return base64.RawURLEncoding.EncodeToString(buf), nil
-}
-
-func hashValue(raw string) string {
-	sum := sha256.Sum256([]byte(raw))
-	return hex.EncodeToString(sum[:])
 }
 
 func hashedValueMatches(raw, hashed string) bool {

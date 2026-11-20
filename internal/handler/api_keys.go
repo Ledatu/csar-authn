@@ -1,10 +1,6 @@
 package handler
 
 import (
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -34,9 +30,8 @@ func (h *Handler) apiKeyStore() store.APICredentialStore {
 	return keys
 }
 
-func (h *Handler) sessionAPIKeyUser(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
-	// Key lifecycle is cookie-session only. Even a valid user JWT must not mint
-	// or revoke personal keys through this surface.
+func (h *Handler) sellerCredentialOwner(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
+	// Seller-issued credentials require the owner’s direct browser session.
 	if r.Header.Get("Authorization") != "" {
 		httpx.WriteError(w, csarerrors.Unauthorized("session required"))
 		return nil, false
@@ -46,6 +41,10 @@ func (h *Handler) sessionAPIKeyUser(w http.ResponseWriter, r *http.Request) (*st
 		if ok {
 			httpx.WriteError(w, csarerrors.Unauthorized("session required"))
 		}
+		return nil, false
+	}
+	if sess.ImpersonatorUserID != nil {
+		httpx.WriteError(w, csarerrors.Forbidden("seller credentials require the owner session"))
 		return nil, false
 	}
 	return user, true
@@ -74,7 +73,7 @@ func validWBSellerID(s string) bool {
 }
 
 func (h *Handler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	user, ok := h.sessionAPIKeyUser(w, r)
+	user, ok := h.sellerCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -96,12 +95,12 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAPIKeyMutationOrigin(w, r) {
 		return
 	}
-	user, ok := h.sessionAPIKeyUser(w, r)
+	user, ok := h.sellerCredentialOwner(w, r)
 	if !ok {
 		return
 	}
 	keys := h.apiKeyStore()
-	if keys == nil || h.authzClient == nil {
+	if keys == nil {
 		httpx.WriteError(w, csarerrors.Unavailable("API key issuance unavailable"))
 		return
 	}
@@ -131,38 +130,18 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, csarerrors.Validation("%s", err))
 		return
 	}
-	for _, scope := range scopes {
-		action := "massAdvert.read"
-		if scope == store.APIKeyScopeAnalyticsRead {
-			action = "analytics.read"
-		}
-		access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
-			Subject: user.ID.String(), Resource: "campaign_module", Action: action,
-			ScopeType: "tenant", ScopeId: "wildberries:" + body.SellerID,
-		})
-		if err != nil || access == nil {
-			httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
-			return
-		}
-		if !access.Allowed {
-			httpx.WriteError(w, csarerrors.Forbidden("%s access required", scope))
-			return
-		}
-	}
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		httpx.WriteError(w, csarerrors.Internal(err))
+	if !h.allowSellerScopes(w, r, user.ID, body.SellerID, scopes) {
 		return
 	}
 	prefix := apiKeyPrefix
 	if slices.Contains(scopes, store.APIKeyScopeAnalyticsRead) || slices.Contains(scopes, store.APIKeyScopeAdvertisingRead) {
 		prefix = apiKeyScopedPrefix
 	}
-	raw := prefix + base64.RawURLEncoding.EncodeToString(random)
-	digest := sha256.Sum256([]byte(raw))
+	raw := prefix + randomToken()
+
 	key := &store.APICredential{
 		ID: uuid.New(), OwnerID: user.ID, SellerID: body.SellerID, Label: body.Label,
-		TokenHash: hex.EncodeToString(digest[:]), Prefix: raw[:len(prefix)+8], Scopes: scopes,
+		TokenHash: hashValue(raw), Prefix: raw[:len(prefix)+8], Scopes: scopes,
 		ExpiresAt: time.Now().UTC().Add(apiKeyLifetime),
 	}
 	if err := keys.CreateAPICredential(r.Context(), key, maxActiveAPIKeys); err != nil {
@@ -176,6 +155,32 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusCreated, map[string]any{"key": key, "token": raw})
 	h.recordAPIKeyAudit(r, user.ID.String(), "api_key.create", key)
+}
+
+func (h *Handler) allowSellerScopes(w http.ResponseWriter, r *http.Request, owner uuid.UUID, seller string, scopes []string) bool {
+	if h.authzClient == nil {
+		httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
+		return false
+	}
+	for _, scope := range scopes {
+		action := "massAdvert.read"
+		if scope == store.APIKeyScopeAnalyticsRead {
+			action = "analytics.read"
+		}
+		access, err := h.authzClient.client.CheckAccess(r.Context(), &pb.CheckAccessRequest{
+			Subject: owner.String(), Resource: "campaign_module", Action: action,
+			ScopeType: "tenant", ScopeId: "wildberries:" + seller,
+		})
+		if err != nil || access == nil {
+			httpx.WriteError(w, csarerrors.Unavailable("authorization unavailable"))
+			return false
+		}
+		if !access.Allowed {
+			httpx.WriteError(w, csarerrors.Forbidden("%s access required", scope))
+			return false
+		}
+	}
+	return true
 }
 
 func requestedAPIKeyScopes(raw json.RawMessage) ([]string, error) {
@@ -202,7 +207,7 @@ func (h *Handler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAPIKeyMutationOrigin(w, r) {
 		return
 	}
-	user, ok := h.sessionAPIKeyUser(w, r)
+	user, ok := h.sellerCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -252,8 +257,8 @@ func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, csarerrors.Unavailable("API keys unavailable"))
 		return
 	}
-	digest := sha256.Sum256([]byte(body.Token))
-	key, err := keys.FindAPICredentialByHash(r.Context(), hex.EncodeToString(digest[:]))
+
+	key, err := keys.FindAPICredentialByHash(r.Context(), hashValue(body.Token))
 	if errors.Is(err, store.ErrNotFound) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]any{"active": false})
 		return

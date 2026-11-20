@@ -454,6 +454,11 @@ func run(
 		return fmt.Errorf("creating server: %w", err)
 	}
 
+	if err := h.RegisterSellerMCP(mux, os.Getenv("MCP_OAUTH_CLIENT_ID"), os.Getenv("MCP_OAUTH_REDIRECT_URI"),
+		os.Getenv("MCP_ROUTER_CA_FILE"), srv.TLSConfig()); err != nil {
+		return err
+	}
+
 	runErr := srv.Run(ctx)
 	if healthSidecar != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)

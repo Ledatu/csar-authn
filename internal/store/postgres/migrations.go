@@ -402,6 +402,27 @@ ALTER TABLE seller_api_credentials ADD CONSTRAINT seller_api_credentials_scopes_
        + CASE WHEN 'advertising:read' = ANY(scopes) THEN 1 ELSE 0 END));
 `,
 	},
+	{Name: "023_hosted_seller_mcp", Up: `
+CREATE TABLE seller_mcp_requests (
+ id text PRIMARY KEY, browser_hash text NOT NULL, client_id text NOT NULL, redirect_uri text NOT NULL,
+ challenge text NOT NULL, state text NOT NULL, expires_at timestamptz NOT NULL
+);
+CREATE INDEX seller_mcp_requests_expiry ON seller_mcp_requests(expires_at);
+CREATE TABLE seller_mcp_grants (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(), owner_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ seller_id uuid NOT NULL, client_id text NOT NULL, redirect_uri text NOT NULL, challenge text NOT NULL,
+ code_hash text UNIQUE, code_expires_at timestamptz NOT NULL, access_hash text UNIQUE,
+ expires_at timestamptz NOT NULL
+);
+CREATE INDEX seller_mcp_grants_owner ON seller_mcp_grants(owner_id);
+CREATE INDEX seller_mcp_grants_expiry ON seller_mcp_grants(expires_at);
+CREATE TABLE seller_mcp_delegations (
+ token_hash text PRIMARY KEY, grant_id uuid NOT NULL REFERENCES seller_mcp_grants(id) ON DELETE CASCADE,
+ expires_at timestamptz NOT NULL
+);
+CREATE INDEX seller_mcp_delegations_expiry ON seller_mcp_delegations(expires_at);
+CREATE INDEX seller_mcp_delegations_grant ON seller_mcp_delegations(grant_id);
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.
