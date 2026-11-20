@@ -1,5 +1,10 @@
 # csar-authn Agent Summary
 
+## Hosted seller OAuth
+
+The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour cabinet grants in PostgreSQL. Both pilot registration environment variables must be set to enable these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
+
+
 ## Role In Prod
 `csar-authn` is the authentication service for the CSAR stack. In prod it handles OAuth login, issues session JWTs, serves JWKS for the router, and exposes STS and admin-style authn endpoints that other services reach through the router or via the configured authz client.
 
