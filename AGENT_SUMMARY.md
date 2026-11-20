@@ -132,3 +132,8 @@ lock across separate business transactions, but is not failover fencing.
 ## User Avatar Contract — 17 November 2026
 
 Avatar upload/set/delete routes, S3 signing/cache/client, provider/legacy photo persistence and avatar profile/directory fields are retired. Identity SQL does not reference avatar columns. Historical migrations remain immutable; physical column retirement is an explicit post-rollout operation, never an automatic rolling-start migration.
+
+## Bot confirmation retries
+- ConfirmBotVerification accepts a repeat only for the same provider and
+  provider ID while the original code is unexpired. Confirmed and consumed
+  states keep their original timestamps and cannot be consumed twice.
