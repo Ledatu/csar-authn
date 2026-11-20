@@ -2,11 +2,14 @@ package handler
 
 import (
 	"errors"
+	"net/http"
+	"slices"
+
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/gatewayctx"
 	"github.com/ledatu/csar-core/httpx"
-	"net/http"
+	pb "github.com/ledatu/csar-proto/csar/authz/v1"
 )
 
 // eligible filters a bounded page supplied by Campaigns. The private gateway route pins
@@ -48,6 +51,25 @@ func (o *sellerOAuth) eligible(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 503, "temporarily_unavailable")
 			return
 		}
+	}
+	// An empty page asks which roster Campaigns should search. Check the
+	// direct platform assignment. Tenant roles cannot widen the search.
+	if len(in.Sellers) == 0 {
+		if o.authzClient == nil {
+			oauthError(w, 503, "temporarily_unavailable")
+			return
+		}
+		roles, err := o.authzClient.client.ListSubjectRoles(r.Context(), &pb.ListSubjectRolesRequest{
+			Subject: in.Subject.String(), ScopeType: "platform",
+		})
+		if err != nil || roles == nil {
+			oauthError(w, 503, "temporarily_unavailable")
+			return
+		}
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+			"platform_admin": slices.Contains(roles.Roles, "platform_admin"), "seller_ids": []string{},
+		})
+		return
 	}
 	ids := make([]string, 0, len(in.Sellers))
 	for _, seller := range in.Sellers {

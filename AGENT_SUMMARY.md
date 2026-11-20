@@ -145,7 +145,7 @@ Avatar upload/set/delete routes, S3 signing/cache/client, provider/legacy photo 
 
 ## Account-wide MCP grants
 
-Account MCP grants store an explicit campaign selection or all current and future eligible Wildberries campaigns. Migration 024 preserves existing single-cabinet grants. The Campaigns-only access filter checks the authenticated owner and current analytics permission. A discovery credential is single-use. Resolving a live campaign can issue a second single-use credential bound to that seller for the v2 report.
+Account MCP grants store an explicit campaign selection or all current and future eligible Wildberries campaigns. Migration 024 preserves existing single-cabinet grants. An empty candidate page returns whether the subject has a direct platform administrator assignment. The Campaigns-only access filter checks the authenticated owner and current analytics permission. A discovery credential is single-use. Resolving a live campaign can issue a second single-use credential bound to that seller for the v2 report.
 
 The private `POST /internal/seller-mcp/v1/introspect` endpoint implements
 the shared authntokens delegation contract for the seller MCP audience. It uses
