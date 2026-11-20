@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-authn/internal/store/postgres"
+	"github.com/ledatu/csar-core/authntokens"
 	pb "github.com/ledatu/csar-proto/csar/authz/v1"
 	"golang.org/x/oauth2"
 )
@@ -194,6 +195,41 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 			t.Errorf("introspection %s=%d", op, w.Code)
 		}
 		return out
+	}
+	portable := func(in authntokens.DelegationRequest) authntokens.DelegationResult {
+		t.Helper()
+		body, err := json.Marshal(in)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := httptest.NewRequest("POST", "/internal/seller-mcp/v1/introspect", strings.NewReader(string(body)))
+		cert := &x509.Certificate{Subject: pkix.Name{CommonName: sellerRouterCN}}
+		r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{cert, ca}}}
+		w := send(r)
+		var result authntokens.DelegationResult
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
+			t.Fatalf("delegation endpoint status %d", w.Code)
+		}
+		return result
+	}
+	request := authntokens.DelegationRequest{Token: access.Token, Purpose: authntokens.GrantExchange, Audience: mcpResource, Scope: store.APIKeyScopeAnalyticsRead}
+	wrong := request
+	wrong.Audience = "https://projects.example"
+	if portable(wrong).Active {
+		t.Fatal("accepted foreign audience")
+	}
+	wrong = request
+	wrong.Scope = "projects:read"
+	if portable(wrong).Active {
+		t.Fatal("accepted foreign scope")
+	}
+	exchanged := portable(request)
+	if !exchanged.Active || exchanged.Tenant != "wildberries:"+seller || exchanged.Subject != testUserID.String() || exchanged.DelegatedToken == "" {
+		t.Fatal("invalid single-resource exchange")
+	}
+	request.Purpose, request.Token = authntokens.GrantDiscovery, exchanged.DelegatedToken
+	if got := portable(request); !got.Active || got.Tenant != "" || got.Purpose != request.Purpose || portable(request).Active {
+		t.Fatal("discovery purpose or single use lost")
 	}
 	first := intro("delegate", access.Token)
 	if first.Grant != result.GrantID {
