@@ -168,11 +168,32 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	if w.Code != 200 || redeem(verifier, mcpResource).Code != 400 {
 		t.Fatal("code must redeem exactly once")
 	}
-	var access struct {
-		Token string `json:"access_token"`
+	type tokenPair struct {
+		Token   string `json:"access_token"`
+		Refresh string `json:"refresh_token"`
+		Seconds int    `json:"expires_in"`
 	}
+	var access tokenPair
 	if err = json.Unmarshal(w.Body.Bytes(), &access); err != nil {
 		t.Fatal(err)
+	}
+	if access.Refresh != "" || access.Seconds != int(store.MCPAccessTTL.Seconds()) {
+		t.Fatal("one-hour consent was silently extended")
+	}
+	refresh := func(raw string, override url.Values) (int, tokenPair) {
+		t.Helper()
+		v := url.Values{"grant_type": {"refresh_token"}, "refresh_token": {raw}, "client_id": {client}}
+		for k, vals := range override {
+			v[k] = vals
+		}
+		r := httptest.NewRequest("POST", "/oauth/mcp/token", strings.NewReader(v.Encode()))
+		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := send(r)
+		var pair tokenPair
+		if err := json.Unmarshal(w.Body.Bytes(), &pair); err != nil {
+			t.Fatal(err)
+		}
+		return w.Code, pair
 	}
 	type response struct {
 		Active bool
@@ -304,6 +325,11 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		if all {
 			selection = map[string]any{"all_campaigns": true}
 		}
+		selection["session_days"] = 8
+		if decide(sellerOrigin, true).Code != 400 {
+			t.Fatal("accepted unknown consent duration")
+		}
+		selection["session_days"] = 7
 		approved := decide(sellerOrigin, true)
 		if approved.Code != 200 || json.Unmarshal(approved.Body.Bytes(), &result) != nil {
 			t.Fatalf("account consent %d", approved.Code)
@@ -314,6 +340,36 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 			t.Fatal("redeem account grant")
 		}
 		grant := uuid.MustParse(result.GrantID)
+		if access.Refresh == "" || access.Seconds != 3600 {
+			t.Fatal("missing renewable connection")
+		}
+		original := access
+		var deadline time.Time
+		if err := db.Pool().QueryRow(t.Context(), `SELECT expires_at FROM seller_mcp_grants WHERE id=$1`, grant).Scan(&deadline); err != nil {
+			t.Fatal(err)
+		}
+		if d := time.Until(deadline); d < 7*24*time.Hour-time.Minute || d > 7*24*time.Hour {
+			t.Fatal("unexpected session deadline")
+		}
+		for _, args := range []url.Values{{"resource": {"https://other.invalid"}}, {"client_id": {"another-client"}}, {"scope": {"analytics:write"}}} {
+			if status, _ := refresh(original.Refresh, args); status != 400 {
+				t.Fatal("refresh changed grant binding")
+			}
+		}
+		if _, err := db.Pool().Exec(t.Context(), `UPDATE seller_mcp_grants SET access_expires_at=now()-interval '1 second' WHERE id=$1`, grant); err != nil {
+			t.Fatal(err)
+		}
+		if intro("delegate-account", original.Token).Active {
+			t.Fatal("expired access token authorized a call")
+		}
+		status, renewed := refresh(original.Refresh, nil)
+		if status != 200 || renewed.Token == original.Token || renewed.Refresh == "" || renewed.Refresh == original.Refresh || renewed.Seconds != 3600 {
+			t.Fatal("silent rotation failed")
+		}
+		access = renewed
+		if intro("delegate-account", original.Token).Active {
+			t.Fatal("old access token survived rotation")
+		}
 		stored, err := db.ActiveMCPSelection(t.Context(), testUserID, grant)
 		if err != nil || !stored.Allows(second) || stored.Allows(future) != all {
 			t.Fatal("wrong stored selection")
@@ -339,8 +395,30 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		if !intro("consume", proof, second).Active || intro("consume", proof, second).Active {
 			t.Fatal("exact one-use report proof")
 		}
-		if err = db.RevokeMCP(t.Context(), testUserID, grant); err != nil {
-			t.Fatal(err)
+		if !all {
+			if status, _ := refresh(original.Refresh, nil); status != 400 {
+				t.Fatal("refresh replay accepted")
+			}
+			if status, _ := refresh(renewed.Refresh, nil); status != 400 || intro("delegate-account", renewed.Token).Active {
+				t.Fatal("replay did not revoke connection")
+			}
+		} else {
+			if _, err := db.Pool().Exec(t.Context(), `UPDATE seller_mcp_grants SET expires_at=now()+interval '40 seconds' WHERE id=$1`, grant); err != nil {
+				t.Fatal(err)
+			}
+			status, last := refresh(renewed.Refresh, nil)
+			if status != 200 || last.Seconds <= 0 || last.Seconds > 40 {
+				t.Fatal("rotation exceeded fixed deadline")
+			}
+			if _, err := db.Pool().Exec(t.Context(), `UPDATE seller_mcp_grants SET expires_at=now()-interval '1 second' WHERE id=$1`, grant); err != nil {
+				t.Fatal(err)
+			}
+			if status, _ := refresh(last.Refresh, nil); status != 400 || intro("delegate-account", last.Token).Active {
+				t.Fatal("expired connection could still operate")
+			}
+			if err = db.RevokeMCP(t.Context(), testUserID, grant); err != nil {
+				t.Fatal(err)
+			}
 		}
 	}
 

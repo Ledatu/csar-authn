@@ -109,7 +109,7 @@ func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
 		"authorization_endpoint":                         oauthAPI + "/authorize",
 		"token_endpoint":                                 oauthAPI + "/token",
 		"response_types_supported":                       []string{"code"},
-		"grant_types_supported":                          []string{"authorization_code"},
+		"grant_types_supported":                          []string{"authorization_code", "refresh_token"},
 		"code_challenge_methods_supported":               []string{"S256"},
 		"scopes_supported":                               []string{store.APIKeyScopeAnalyticsRead},
 		"token_endpoint_auth_methods_supported":          []string{"none"},
@@ -165,14 +165,15 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(consentCookie)
 	var in struct {
 		store.MCPSelection
-		Request  string `json:"request"`
-		Seller   string `json:"seller_id"`
-		Decision string `json:"decision"`
-		Client   string `json:"client_id"`
+		SessionDays int    `json:"session_days"`
+		Request     string `json:"request"`
+		Seller      string `json:"seller_id"`
+		Decision    string `json:"decision"`
+		Client      string `json:"client_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
-		in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
+		(in.SessionDays != 0 && in.SessionDays != store.MCPConnectionDays) || in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -202,7 +203,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
 	}
-	binding := store.MCPRequest{ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
+	binding := store.MCPRequest{SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
 	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_request")
@@ -238,17 +239,34 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	q := r.PostForm
-	if q.Get("grant_type") != "authorization_code" {
-		oauthError(w, 400, "unsupported_grant_type")
-		return
-	}
-	if q.Get("client_id") != o.clientID || q.Get("redirect_uri") != o.redirect || !validMCPResource(q.Get("resource")) ||
-		!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
+	access := "aurum_mcp_" + randomToken()
+	refresh := "aurum_refresh_" + randomToken()
+	var lifetime store.MCPTokenLifetime
+	var err error
+	if q.Get("client_id") != o.clientID {
 		oauthError(w, 400, "invalid_grant")
 		return
 	}
-	access := "aurum_mcp_" + randomToken()
-	err := o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), o.clientID, o.redirect, oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access))
+	switch q.Get("grant_type") {
+	case "authorization_code":
+		if q.Get("redirect_uri") != o.redirect || !validMCPResource(q.Get("resource")) ||
+			!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
+		lifetime, err = o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), o.clientID, o.redirect, oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access), hashValue(refresh))
+	case "refresh_token":
+		// Omitted scope/resource retain the original single-audience grant.
+		if (q.Has("resource") && !validMCPResource(q.Get("resource"))) || (q.Has("scope") && q.Get("scope") != store.APIKeyScopeAnalyticsRead) ||
+			!strings.HasPrefix(q.Get("refresh_token"), "aurum_refresh_") || len(q.Get("refresh_token")) != len("aurum_refresh_")+43 {
+			oauthError(w, 400, "invalid_grant")
+			return
+		}
+		lifetime, err = o.grants.RefreshMCP(r.Context(), o.clientID, hashValue(q.Get("refresh_token")), hashValue(access), hashValue(refresh))
+	default:
+		oauthError(w, 400, "unsupported_grant_type")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_grant")
 		return
@@ -257,7 +275,11 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"access_token": access, "token_type": "Bearer", "scope": store.APIKeyScopeAnalyticsRead, "expires_in": 3600})
+	response := map[string]any{"access_token": access, "token_type": "Bearer", "scope": store.APIKeyScopeAnalyticsRead, "expires_in": lifetime.Seconds}
+	if lifetime.Renewable {
+		response["refresh_token"] = refresh
+	}
+	httpx.WriteJSON(w, 200, response)
 }
 
 // The listener also trusts the general service CA. Delegation requires a chain

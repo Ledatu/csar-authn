@@ -17,7 +17,7 @@ func (s *Store) BeginMCP(ctx context.Context, r store.MCPRequest) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_requests WHERE id IN (SELECT id FROM seller_mcp_requests WHERE expires_at<=now() LIMIT 100)`); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id IN (SELECT id FROM seller_mcp_grants WHERE expires_at<=now() LIMIT 100)`); err != nil {
+		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id IN (SELECT id FROM seller_mcp_grants WHERE expires_at<=now() OR (code_hash IS NOT NULL AND code_expires_at<=now()) LIMIT 100)`); err != nil {
 			return err
 		}
 		_, err := tx.Exec(ctx, `INSERT INTO seller_mcp_requests(id,browser_hash,client_id,redirect_uri,challenge,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,now()+interval '5 minutes')`, r.ID, r.BrowserHash, r.ClientID, r.RedirectURI, r.Challenge, r.State)
@@ -42,19 +42,76 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 			singleton = &selected[0]
 			selected = nil
 		}
-		return tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids)
-  VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 minute',now()+interval '1 minute',$7,coalesce($8::text[],'{}')) RETURNING id`, owner, singleton, request.ClientID, r.RedirectURI, challenge, codeHash, selection.AllCampaigns, selected).Scan(&r.GrantID)
+		return tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids,access_expires_at)
+  VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 minute',CASE WHEN $9::int>0 THEN now()+make_interval(days=>$9) ELSE now()+interval '1 minute' END,$7,coalesce($8::text[],'{}'),CASE WHEN $9>0 THEN now() END) RETURNING id`, owner, singleton, request.ClientID, r.RedirectURI, challenge, codeHash, selection.AllCampaigns, selected, request.SessionDays).Scan(&r.GrantID)
 	})
 	return r, err
 }
 
-func (s *Store) RedeemMCP(ctx context.Context, codeHash, client, redirect, challenge, accessHash string) error {
-	result, err := s.pool.Exec(ctx, `UPDATE seller_mcp_grants SET code_hash=NULL,access_hash=$5,expires_at=now()+interval '1 hour'
- WHERE code_hash=$1 AND client_id=$2 AND redirect_uri=$3 AND challenge=$4 AND code_expires_at>now()`, codeHash, client, redirect, challenge, accessHash)
-	if err == nil && result.RowsAffected() != 1 {
-		return store.ErrNotFound
-	}
+// Access expiry is separate from the fixed consent deadline. New sessions
+// store their access hash separately so old issuer replicas fail closed.
+func (s *Store) RedeemMCP(ctx context.Context, codeHash, client, redirect, challenge, accessHash, refreshHash string) (store.MCPTokenLifetime, error) {
+	var lifetime store.MCPTokenLifetime
+	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var grant uuid.UUID
+		err := tx.QueryRow(ctx, `UPDATE seller_mcp_grants SET code_hash=NULL,
+        access_hash=CASE WHEN access_expires_at IS NULL THEN $5 END,
+        session_access_hash=CASE WHEN access_expires_at IS NOT NULL THEN $5 END,
+        access_expires_at=CASE WHEN access_expires_at IS NOT NULL THEN least(expires_at, now()+make_interval(secs=>$6)) END,
+        expires_at=CASE WHEN access_expires_at IS NULL THEN now()+make_interval(secs=>$6) ELSE expires_at END
+      WHERE code_hash=$1 AND client_id=$2 AND redirect_uri=$3 AND challenge=$4 AND code_expires_at>now()
+      RETURNING id, access_expires_at IS NOT NULL, floor(extract(epoch from (coalesce(access_expires_at,expires_at)-now())))::int`, codeHash, client, redirect, challenge, accessHash, store.MCPAccessTTL.Seconds()).Scan(&grant, &lifetime.Renewable, &lifetime.Seconds)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil || !lifetime.Renewable {
+			return err
+		}
+		return insertRefresh(ctx, tx, grant, refreshHash)
+	})
+	return lifetime, err
+}
+
+func insertRefresh(ctx context.Context, tx pgx.Tx, grant uuid.UUID, hash string) error {
+	_, err := tx.Exec(ctx, `INSERT INTO seller_mcp_refresh_tokens(token_hash,grant_id) VALUES ($1,$2)`, hash, grant)
 	return err
+}
+
+// Serialize rotation and revocation on the grant. Reuse of any spent token
+// revokes the family, including outstanding access tokens and proofs.
+func (s *Store) RefreshMCP(ctx context.Context, client, presentedHash, accessHash, refreshHash string) (store.MCPTokenLifetime, error) {
+	lifetime := store.MCPTokenLifetime{Renewable: true}
+	var reused bool
+	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var grant uuid.UUID
+		err := tx.QueryRow(ctx, `SELECT g.id FROM seller_mcp_refresh_tokens r JOIN seller_mcp_grants g ON g.id=r.grant_id
+        WHERE r.token_hash=$1 AND g.client_id=$2 AND g.expires_at>now() FOR UPDATE OF g`, presentedHash, client).Scan(&grant)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		consumed, err := tx.Exec(ctx, `UPDATE seller_mcp_refresh_tokens SET spent=true WHERE token_hash=$1 AND NOT spent`, presentedHash)
+		if err != nil {
+			return err
+		}
+		if consumed.RowsAffected() == 0 {
+			reused = true
+			_, err = tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id=$1`, grant)
+			return err
+		}
+		err = tx.QueryRow(ctx, `UPDATE seller_mcp_grants SET session_access_hash=$2,access_expires_at=least(expires_at,now()+make_interval(secs=>$3))
+      WHERE id=$1 RETURNING floor(extract(epoch from (access_expires_at-now())))::int`, grant, accessHash, store.MCPAccessTTL.Seconds()).Scan(&lifetime.Seconds)
+		if err != nil {
+			return err
+		}
+		return insertRefresh(ctx, tx, grant, refreshHash)
+	})
+	if err == nil && reused {
+		err = store.ErrNotFound
+	}
+	return lifetime, err
 }
 
 func scanMCPGrant(row pgx.Row, delegation bool) (store.MCPGrant, error) {
@@ -78,8 +135,8 @@ func (s *Store) DelegateMCP(ctx context.Context, accessHash, delegatedHash strin
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var err error
 		g, err = scanMCPGrant(tx.QueryRow(ctx, `WITH granted AS (
-    SELECT id,owner_id,client_id,seller_id,all_campaigns,selected_ids,least(expires_at,now()+interval '30 seconds') AS expires_at FROM seller_mcp_grants
-    WHERE access_hash=$1 AND expires_at>now() FOR KEY SHARE
+    SELECT id,owner_id,client_id,seller_id,all_campaigns,selected_ids,least(expires_at,access_expires_at,now()+interval '30 seconds') AS expires_at FROM seller_mcp_grants
+    WHERE (access_hash=$1 OR (session_access_hash=$1 AND access_expires_at>now())) AND expires_at>now() FOR SHARE
    ), issued AS (INSERT INTO seller_mcp_delegations(token_hash,grant_id,expires_at,discovery_only)
     SELECT $2,id,expires_at,$3 FROM granted RETURNING grant_id)
    SELECT id,owner_id,client_id,coalesce(seller_id::text,''),expires_at,all_campaigns,selected_ids FROM granted JOIN issued ON grant_id=id`, accessHash, delegatedHash, discoveryOnly), false)
@@ -100,7 +157,7 @@ func (s *Store) ConsumeMCP(ctx context.Context, delegatedHash string) (store.MCP
 
 func (s *Store) ListMCP(ctx context.Context, owner uuid.UUID) ([]store.MCPGrant, error) {
 	rows, err := s.pool.Query(ctx, `SELECT id,owner_id,client_id,coalesce(seller_id::text,''),expires_at,all_campaigns,selected_ids FROM seller_mcp_grants
-  WHERE owner_id=$1 AND expires_at>now() AND access_hash IS NOT NULL ORDER BY expires_at DESC`, owner)
+  WHERE owner_id=$1 AND expires_at>now() AND coalesce(access_hash,session_access_hash) IS NOT NULL ORDER BY expires_at DESC`, owner)
 	if err != nil {
 		return nil, err
 	}
@@ -126,7 +183,7 @@ func (s *Store) RevokeMCP(ctx context.Context, owner, id uuid.UUID) error {
 func (s *Store) ActiveMCPSelection(ctx context.Context, owner, grant uuid.UUID) (store.MCPSelection, error) {
 	var selection store.MCPSelection
 	err := s.pool.QueryRow(ctx, `SELECT all_campaigns, CASE WHEN seller_id IS NULL THEN selected_ids ELSE ARRAY[seller_id::text] END
-        FROM seller_mcp_grants WHERE id=$1 AND owner_id=$2 AND access_hash IS NOT NULL AND expires_at>now()`, grant, owner).Scan(&selection.AllCampaigns, &selection.SellerIDs)
+        FROM seller_mcp_grants WHERE id=$1 AND owner_id=$2 AND coalesce(access_hash,session_access_hash) IS NOT NULL AND expires_at>now()`, grant, owner).Scan(&selection.AllCampaigns, &selection.SellerIDs)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return selection, store.ErrNotFound
 	}
@@ -136,7 +193,7 @@ func (s *Store) ActiveMCPSelection(ctx context.Context, owner, grant uuid.UUID) 
 func (s *Store) IssueMCPReport(ctx context.Context, owner, grant uuid.UUID, seller, proofHash string) error {
 	res, err := s.pool.Exec(ctx, `INSERT INTO seller_mcp_delegations(token_hash,grant_id,expires_at,report_seller)
         SELECT $1,id,least(expires_at,now()+interval '30 seconds'),$4::text::uuid FROM seller_mcp_grants
-        WHERE id=$2 AND owner_id=$3 AND expires_at>now() AND access_hash IS NOT NULL
+        WHERE id=$2 AND owner_id=$3 AND expires_at>now() AND coalesce(access_hash,session_access_hash) IS NOT NULL
           AND (all_campaigns OR seller_id::text=$4 OR $4=ANY(selected_ids)) FOR KEY SHARE`, proofHash, grant, owner, seller)
 	if err == nil && res.RowsAffected() != 1 {
 		return store.ErrNotFound

@@ -152,3 +152,9 @@ the shared authntokens delegation contract for the seller MCP audience. It uses
 the same dedicated router certificate check, grant store and single-use proof
 consumption as the original seller endpoints. Campaigns owns resource discovery.
 The adapter supplies the canonical Wildberries tenant for resource use.
+
+Seven-day seller MCP consent is explicit in the browser approval. The token
+endpoint issues hourly access and rotating refresh credentials for these grants.
+Only credential hashes enter PostgreSQL. Reusing a spent refresh revokes the
+connection. Existing one-hour approvals keep their original deadline. Deploy
+the migrated issuer on all replicas before enabling the updated consent UI.
