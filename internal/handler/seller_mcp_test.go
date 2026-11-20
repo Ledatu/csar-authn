@@ -436,3 +436,43 @@ func TestDelegationRequiresDedicatedRouterCA(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPEligibilityPlatformAdmin(t *testing.T) {
+	th := newTestHarness(t)
+	ca := &x509.Certificate{Raw: []byte("test root")}
+	client := &x509.Certificate{Subject: pkix.Name{CommonName: sellerRouterCN}}
+	o := sellerOAuth{Handler: th.handler, routerCA: ca}
+	for _, tc := range []struct {
+		name   string
+		roles  []string
+		err    error
+		status int
+		admin  bool
+	}{
+		{"platform administrator", []string{"platform_admin"}, nil, 200, true},
+		{"platform manager", []string{"platform_manager"}, nil, 200, false},
+		{"tenant member", nil, nil, 200, false},
+		{"role lookup fails", nil, errors.New("unavailable"), 503, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			th.mock.listSubjectRolesFn = func(_ context.Context, req *pb.ListSubjectRolesRequest) (*pb.ListSubjectRolesResponse, error) {
+				if req.Subject != testUserID.String() || req.ScopeType != "platform" || req.ScopeId != "" {
+					t.Fatalf("unexpected role lookup %v", req)
+				}
+				return &pb.ListSubjectRolesResponse{Roles: tc.roles}, tc.err
+			}
+			r := httptest.NewRequest(http.MethodPost, "/svc/authn/mcp/eligible", strings.NewReader(`{"subject":"`+testUserID.String()+`"}`))
+			r.Header.Set("Content-Type", "application/json")
+			r.Header.Set("X-Gateway-Subject", "svc:aurumskynet-campaigns")
+			r.TLS = &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{client, ca}}}
+			w := httptest.NewRecorder()
+			o.eligible(w, r)
+			var body struct {
+				PlatformAdmin bool `json:"platform_admin"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil || w.Code != tc.status || body.PlatformAdmin != tc.admin {
+				t.Fatalf("status %d, response %s", w.Code, w.Body)
+			}
+		})
+	}
+}
