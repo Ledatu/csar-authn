@@ -862,7 +862,24 @@ func (s *Store) ConfirmBotVerification(ctx context.Context, codeHash, provider, 
 	if err != nil {
 		return fmt.Errorf("confirming bot verification: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
+	if tag.RowsAffected() != 0 {
+		return nil
+	}
+
+	// A response can be lost after confirmation commits. Read again with a
+	// fresh statement snapshot so a concurrent confirmation is visible.
+	var confirmed bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT EXISTS (
+		 SELECT 1 FROM bot_verifications
+		 WHERE code_hash = $1 AND provider = $2 AND provider_user_id = $3
+		   AND status IN ('confirmed', 'consumed') AND expires_at > now()
+		)`, codeHash, provider, providerUserID,
+	).Scan(&confirmed)
+	if err != nil {
+		return fmt.Errorf("checking repeated bot verification: %w", err)
+	}
+	if !confirmed {
 		return store.ErrNotFound
 	}
 	return nil

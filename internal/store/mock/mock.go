@@ -1238,6 +1238,11 @@ func (s *Store) ConfirmBotVerification(_ context.Context, codeHash, provider, pr
 	defer s.mu.Unlock()
 	now := time.Now()
 	for _, v := range s.botVerifications {
+		if v.CodeHash == codeHash && now.Before(v.ExpiresAt) &&
+			(v.Status == "confirmed" || v.Status == "consumed") &&
+			v.Provider == provider && v.ProviderUserID == providerUserID {
+			return nil
+		}
 		if v.CodeHash == codeHash && v.Status == "pending" && now.Before(v.ExpiresAt) {
 			v.Status = "confirmed"
 			v.Provider = provider
