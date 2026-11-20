@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/google/uuid"
@@ -72,12 +73,15 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 		return nil
 	})
 	o := &sellerOAuth{Handler: h, grants: grants, clientID: clientID, redirect: redirect, routerCA: ca}
+	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
+	mux.HandleFunc("POST /svc/authn/mcp/eligible", o.eligible)
 	mux.HandleFunc("GET /.well-known/oauth-authorization-server", o.metadata)
 	mux.HandleFunc("GET /oauth/mcp/authorize", o.authorize)
 	mux.HandleFunc("POST /oauth/mcp/token", o.token)
 	mux.HandleFunc("POST /oauth/mcp/consent", o.consent)
 	mux.HandleFunc("GET /oauth/mcp/connections", o.connections)
 	mux.HandleFunc("DELETE /oauth/mcp/connections/{id}", o.revoke)
+	mux.HandleFunc("POST /internal/seller-mcp/delegate-account", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/delegate", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume", o.introspect)
 	return nil
@@ -142,6 +146,7 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: consentCookie, Value: browser, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
+	// The existing portal accepts this URL during a rolling upgrade. The account UI forwards it to /mcp.
 	http.Redirect(w, r, sellerOrigin+"/developer-api?"+url.Values{"mcp_request": {id}, "mcp_client": {o.clientID}}.Encode(), http.StatusSeeOther)
 }
 
@@ -157,12 +162,13 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	cookie, err := r.Cookie(consentCookie)
 	var in struct {
+		store.MCPSelection
 		Request  string `json:"request"`
 		Seller   string `json:"seller_id"`
 		Decision string `json:"decision"`
 		Client   string `json:"client_id"`
 	}
-	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
 		in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
 		oauthError(w, 400, "invalid_request")
@@ -170,18 +176,32 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	code, codeHash := "", ""
 	if in.Decision == "approve" {
-		if !validWBSellerID(in.Seller) {
+		if in.Seller != "" {
+			if in.AllCampaigns || len(in.SellerIDs) > 0 {
+				oauthError(w, 400, "invalid_request")
+				return
+			}
+			in.SellerIDs = []string{in.Seller}
+		}
+		if len(in.SellerIDs) > 256 || in.AllCampaigns != (len(in.SellerIDs) == 0) {
 			oauthError(w, 400, "invalid_request")
 			return
 		}
-		if !o.allowSellerScopes(w, r, user.ID, in.Seller, []string{store.APIKeyScopeAnalyticsRead}) {
-			return
+		slices.Sort(in.SellerIDs)
+		for i, seller := range in.SellerIDs {
+			if !validWBSellerID(seller) || i > 0 && seller == in.SellerIDs[i-1] {
+				oauthError(w, 400, "invalid_request")
+				return
+			}
+			if !o.allowSellerScopes(w, r, user.ID, seller, []string{store.APIKeyScopeAnalyticsRead}) {
+				return
+			}
 		}
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
 	}
 	binding := store.MCPRequest{ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
-	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.Seller, codeHash)
+	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_request")
 		return
@@ -200,7 +220,11 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		params.Set("error", "access_denied")
 	}
 	http.SetCookie(w, &http.Cookie{Name: consentCookie, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	httpx.WriteJSON(w, 200, map[string]string{"redirect": tx.RedirectURI + "?" + params.Encode()})
+	response := map[string]string{"redirect": tx.RedirectURI + "?" + params.Encode()}
+	if tx.GrantID != uuid.Nil {
+		response["grant_id"] = tx.GrantID.String()
+	}
+	httpx.WriteJSON(w, 200, response)
 }
 
 func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
@@ -254,14 +278,16 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Token string `json:"token"`
+		Token  string `json:"token"`
+		Seller string `json:"seller_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 2048)
 	if httpx.ReadJSON(r, &body) != nil {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	delegate := r.URL.Path == "/internal/seller-mcp/delegate"
+	account := r.URL.Path == "/internal/seller-mcp/delegate-account"
+	delegate := account || r.URL.Path == "/internal/seller-mcp/delegate"
 	prefix := "aurum_dlg_"
 	if delegate {
 		prefix = "aurum_mcp_"
@@ -275,7 +301,7 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 	proof := ""
 	if delegate {
 		proof = "aurum_dlg_" + randomToken()
-		g, err = o.grants.DelegateMCP(r.Context(), hashValue(body.Token), hashValue(proof))
+		g, err = o.grants.DelegateMCP(r.Context(), hashValue(body.Token), hashValue(proof), account)
 	} else {
 		g, err = o.grants.ConsumeMCP(r.Context(), hashValue(body.Token))
 	}
@@ -287,7 +313,24 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"active": true, "subject": g.OwnerID, "credential_id": g.ID, "seller_id": g.SellerID, "scopes": []string{store.APIKeyScopeAnalyticsRead}, "expires_at": g.ExpiresAt, "delegated_token": proof})
+	discovery := r.URL.Path == "/internal/seller-mcp/consume-discovery"
+	if discovery && !g.DiscoveryOnly || delegate && !account && g.SellerID == "" {
+		httpx.WriteJSON(w, 200, map[string]bool{"active": false})
+		return
+	}
+	if !delegate && !discovery {
+		requested := body.Seller
+		if requested == "" {
+			requested = g.SellerID
+		} // legacy single-cabinet gateway
+		if g.DiscoveryOnly || !validWBSellerID(requested) || !g.Allows(requested) ||
+			(g.ReportSeller != "" && requested != g.ReportSeller) || (g.ReportSeller == "" && requested != g.SellerID) {
+			httpx.WriteJSON(w, 200, map[string]bool{"active": false})
+			return
+		}
+		g.SellerID = requested
+	}
+	httpx.WriteJSON(w, 200, map[string]any{"active": true, "account_grant": account || discovery, "discovery": discovery, "subject": g.OwnerID, "credential_id": g.ID, "seller_id": g.SellerID, "scopes": []string{store.APIKeyScopeAnalyticsRead}, "expires_at": g.ExpiresAt, "delegated_token": proof})
 }
 func (o *sellerOAuth) connections(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")

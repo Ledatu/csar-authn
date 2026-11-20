@@ -2,7 +2,7 @@
 
 ## Hosted seller OAuth
 
-The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour cabinet grants in PostgreSQL. Both pilot registration environment variables must be set to enable these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
+The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour campaign grants in PostgreSQL. Both pilot registration environment variables must be set to enable these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
 
 
 ## Role In Prod
@@ -142,3 +142,7 @@ Avatar upload/set/delete routes, S3 signing/cache/client, provider/legacy photo 
 - ConfirmBotVerification accepts a repeat only for the same provider and
   provider ID while the original code is unexpired. Confirmed and consumed
   states keep their original timestamps and cannot be consumed twice.
+
+## Account-wide MCP grants
+
+Account MCP grants store an explicit campaign selection or all current and future eligible Wildberries campaigns. Migration 024 preserves existing single-cabinet grants. The Campaigns-only access filter checks the authenticated owner and current analytics permission. A discovery credential is single-use. Resolving a live campaign can issue a second single-use credential bound to that seller for the v2 report.

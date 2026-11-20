@@ -423,6 +423,16 @@ CREATE TABLE seller_mcp_delegations (
 CREATE INDEX seller_mcp_delegations_expiry ON seller_mcp_delegations(expires_at);
 CREATE INDEX seller_mcp_delegations_grant ON seller_mcp_delegations(grant_id);
 `},
+	{Name: "024_mcp_campaign_selection", Up: `
+ALTER TABLE seller_mcp_delegations ADD COLUMN discovery_only boolean NOT NULL DEFAULT false, ADD COLUMN report_seller uuid;
+ALTER TABLE seller_mcp_grants ALTER COLUMN seller_id DROP NOT NULL,
+ ADD COLUMN all_campaigns boolean NOT NULL DEFAULT false,
+ ADD COLUMN selected_ids text[] NOT NULL DEFAULT '{}',
+ ADD CONSTRAINT mcp_selection_shape CHECK (
+ (seller_id IS NOT NULL AND NOT all_campaigns AND cardinality(selected_ids)=0) OR
+ (seller_id IS NULL AND all_campaigns AND cardinality(selected_ids)=0) OR
+ (seller_id IS NULL AND NOT all_campaigns AND cardinality(selected_ids) BETWEEN 2 AND 256));
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.
