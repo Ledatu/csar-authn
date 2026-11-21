@@ -2,7 +2,7 @@
 
 ## Hosted seller OAuth
 
-The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour campaign grants in PostgreSQL. Both pilot registration environment variables must be set to enable these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
+The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour campaign grants in PostgreSQL. The primary MCP_OAUTH_CLIENT_ID/MCP_OAUTH_REDIRECT_URI pair and optional MCP_OAUTH_CLIENTS JSON define startup-only public registrations. An empty registry disables these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
 
 
 ## Role In Prod
@@ -158,3 +158,19 @@ endpoint issues hourly access and rotating refresh credentials for these grants.
 Only credential hashes enter PostgreSQL. Reusing a spent refresh revokes the
 connection. Existing one-hour approvals keep their original deadline. Deploy
 the migrated issuer on all replicas before enabling the updated consent UI.
+
+## Separate MCP public clients
+
+MCP_OAUTH_CLIENTS is a bounded JSON array of client_id, redirect_uris and optional
+allow_loopback_port. It adds explicit registrations beside the primary pair;
+duplicate IDs, unknown fields, wildcard/invalid callbacks and invalid loopback
+policies fail startup. No dynamic registration endpoint or client secret exists.
+VS Code may vary only the numeric port of a registered HTTP loopback-IP callback;
+HTTPS, DNS localhost, host and escaped path remain exact. Every code/refresh
+remains bound to the actual client; authorization stores the exact requested
+callback and token redemption must present that identical value. Consent first
+looks up the callback by browser+request+client, checks the live registry, then
+atomically consumes the same exact binding. No storage migration is required.
+
+The platform-admin beta check remains in gateway policy; registration alone
+confers no data access. Existing grants retain their client IDs and deadlines.

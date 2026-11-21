@@ -35,6 +35,19 @@ type mcpFixtureStore struct {
 // Uses an isolated localhost PostgreSQL fixture. Login and the Authz decision use
 // the normal handler test doubles; authorization codes, grants and delegation are real.
 func TestSellerMCPGrantLifecycle(t *testing.T) {
+	for _, client := range append([]SellerMCPClient{{ClientID: "codex", RedirectURIs: []string{"http://127.0.0.1:48973/oauth/callback"}}}, testMCPClients()...) {
+		for _, callback := range client.RedirectURIs {
+			if client.AllowLoopbackPort && strings.HasPrefix(callback, "http://") {
+				callback = "http://127.0.0.1:33418" + strings.TrimPrefix(callback, "http://127.0.0.1")
+			}
+			t.Run(client.ClientID+"/"+callback, func(t *testing.T) {
+				testSellerMCPGrantLifecycle(t, client.ClientID, callback)
+			})
+		}
+	}
+}
+
+func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set MCP_TEST_DATABASE_URL to run PostgreSQL grant lifecycle")
@@ -60,8 +73,6 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	}
 	th, _, session := apiKeyScopeHarness(t)
 	th.handler.store = mcpFixtureStore{th.store, db}
-	const client = "analytics-pilot"
-	const redirect = "http://127.0.0.1:8765/callback"
 	seller := uuid.NewString()
 	var allowed atomic.Bool
 	th.mock.checkAccessFn = func(_ context.Context, r *pb.CheckAccessRequest) (*pb.CheckAccessResponse, error) {
@@ -76,7 +87,7 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	listener := &tls.Config{MinVersion: tls.VersionTLS13, ClientCAs: x509.NewCertPool(), ClientAuth: tls.RequireAndVerifyClientCert}
-	if err = th.handler.RegisterSellerMCP(mux, client, redirect, caFile, listener); err != nil {
+	if err = th.handler.RegisterSellerMCP(mux, "codex", "http://127.0.0.1:48973/oauth/callback", caFile, listener, testMCPClients()...); err != nil {
 		t.Fatal(err)
 	}
 	send := func(r *http.Request) *httptest.ResponseRecorder {
@@ -96,9 +107,10 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		t.Fatal("consent binding cookie")
 	}
 	decision := "approve"
+	consentClient := client
 	selection := map[string]any{"seller_id": seller}
 	decide := func(origin string, addBrowserCookie bool) *httptest.ResponseRecorder {
-		fields := map[string]any{"client_id": client, "decision": decision, "request": dest.Query().Get("mcp_request")}
+		fields := map[string]any{"client_id": consentClient, "decision": decision, "request": dest.Query().Get("mcp_request")}
 		for k, v := range selection {
 			fields[k] = v
 		}
@@ -128,6 +140,21 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	if decide("https://other.invalid", true).Code != 403 || decide("https://seller.aurum-sky.net", false).Code != 400 {
 		t.Fatal("consent must bind origin and browser")
 	}
+	otherClient, otherRedirect := "codex", "http://127.0.0.1:48973/oauth/callback"
+	if client == "codex" {
+		otherClient, otherRedirect = "cursor", "http://localhost:8787/callback"
+	}
+	consentClient = otherClient
+	if decide(sellerOrigin, true).Code != 400 {
+		t.Fatal("consent accepted another registered client")
+	}
+	consentClient = client
+	originalBrowser := cookie.Value
+	cookie.Value = randomToken()
+	if decide(sellerOrigin, true).Code != 400 {
+		t.Fatal("consent accepted another browser binding")
+	}
+	cookie.Value = originalBrowser
 	w := decide("https://seller.aurum-sky.net", true)
 	if w.Code != 200 {
 		t.Fatalf("approve=%d", w.Code)
@@ -155,8 +182,9 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	if callback.Query().Get("state") != "client-state" || callback.Query().Get("iss") != mcpIssuer {
 		t.Fatal("incorrect callback")
 	}
+	tokenClient, tokenRedirect := client, redirect
 	redeem := func(verifier, resource string) *httptest.ResponseRecorder {
-		v := url.Values{"grant_type": {"authorization_code"}, "code": {callback.Query().Get("code")}, "code_verifier": {verifier}, "redirect_uri": {redirect}, "client_id": {client}, "resource": {resource}}
+		v := url.Values{"grant_type": {"authorization_code"}, "code": {callback.Query().Get("code")}, "code_verifier": {verifier}, "redirect_uri": {tokenRedirect}, "client_id": {tokenClient}, "resource": {resource}}
 		r := httptest.NewRequest("POST", "/oauth/mcp/token", strings.NewReader(v.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		return send(r)
@@ -164,6 +192,29 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 	if redeem(oauth2.GenerateVerifier(), mcpResource).Code != 400 || redeem(verifier, "https://other.invalid").Code != 400 {
 		t.Fatal("PKCE and resource binding")
 	}
+	tokenClient, tokenRedirect = otherClient, otherRedirect
+	if redeem(verifier, mcpResource).Code != 400 {
+		t.Fatal("code redeemed by another registered client")
+	}
+	tokenClient, tokenRedirect = client, redirect
+	for _, registered := range testMCPClients() {
+		if registered.ClientID != client {
+			continue
+		}
+		for _, alternative := range registered.RedirectURIs {
+			if registered.AllowLoopbackPort && strings.HasPrefix(alternative, "http://") {
+				alternative = "http://127.0.0.1:59001/"
+			}
+			if alternative == redirect {
+				continue
+			}
+			tokenRedirect = alternative
+			if redeem(verifier, mcpResource).Code != 400 {
+				t.Fatal("code changed its exact registered callback")
+			}
+		}
+	}
+	tokenRedirect = redirect
 	w = redeem(verifier, mcpResource+"/")
 	if w.Code != 200 || redeem(verifier, mcpResource).Code != 400 {
 		t.Fatal("code must redeem exactly once")
@@ -351,7 +402,7 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 		if d := time.Until(deadline); d < 7*24*time.Hour-time.Minute || d > 7*24*time.Hour {
 			t.Fatal("unexpected session deadline")
 		}
-		for _, args := range []url.Values{{"resource": {"https://other.invalid"}}, {"client_id": {"another-client"}}, {"scope": {"analytics:write"}}} {
+		for _, args := range []url.Values{{"resource": {"https://other.invalid"}}, {"client_id": {"another-client"}}, {"client_id": {otherClient}}, {"scope": {"analytics:write"}}} {
 			if status, _ := refresh(original.Refresh, args); status != 400 {
 				t.Fatal("refresh changed grant binding")
 			}

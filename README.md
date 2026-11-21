@@ -332,3 +332,28 @@ introspectors reject the v2 token length. Thus the v2 format remains sufficient
 for fail-closed rollback. Finish upgrading all introspection replicas before
 enabling the new scope choice. The Advertising scope also has its own route
 policy and cannot be substituted by a saved-settings or Analytics key.
+
+### Additional hosted MCP public registrations
+
+Keep the existing primary MCP_OAUTH_CLIENT_ID and MCP_OAUTH_REDIRECT_URI pair.
+MCP_OAUTH_CLIENTS optionally supplies a JSON array of additional public clients:
+
+```json
+[{"client_id":"cursor","redirect_uris":["http://localhost:8787/callback","https://www.cursor.com/agents/mcp/oauth/callback"]}]
+```
+
+Use explicit callbacks from the client vendor. No client secret or dynamic
+registration is introduced. allow_loopback_port is an optional per-client boolean
+for native clients that choose an ephemeral port: it requires a portless HTTP
+127.0.0.1 or ::1 callback entry, varies only the numeric port, and preserves host
+and escaped path. Register an empty/root path separately when the client uses
+both spellings. The exact callback requested at authorization is persisted and
+required unchanged at code redemption; the port is never generalized in storage.
+All registration settings require a restart. The gateway's platform-admin beta
+policy, Analytics scope, consent, selected stores and revocation still apply.
+
+Run local PostgreSQL lifecycle acceptance with MCP_TEST_DATABASE_URL pointing to
+127.0.0.1/csar_mcp_test. The lifecycle suite exercises each registered surface,
+cross-client consent/code/refresh failures, exact callback binding, PKCE, code
+replay, expiry, refresh rotation/reuse and revocation. Synthetic identity/Authz
+fixtures do not constitute native production-client acceptance.

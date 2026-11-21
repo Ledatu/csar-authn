@@ -454,8 +454,12 @@ func run(
 		return fmt.Errorf("creating server: %w", err)
 	}
 
+	additionalMCPClients, err := handler.ParseSellerMCPClients(os.Getenv("MCP_OAUTH_CLIENTS"))
+	if err != nil {
+		return err
+	}
 	if err := h.RegisterSellerMCP(mux, os.Getenv("MCP_OAUTH_CLIENT_ID"), os.Getenv("MCP_OAUTH_REDIRECT_URI"),
-		os.Getenv("MCP_ROUTER_CA_FILE"), srv.TLSConfig()); err != nil {
+		os.Getenv("MCP_ROUTER_CA_FILE"), srv.TLSConfig(), additionalMCPClients...); err != nil {
 		return err
 	}
 
