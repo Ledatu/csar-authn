@@ -13,6 +13,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
@@ -33,17 +34,18 @@ var verifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 
 type sellerOAuth struct {
 	*Handler
-	grants             store.MCPGrantStore
-	clientID, redirect string
-	routerCA           *x509.Certificate
+	grants   store.MCPGrantStore
+	clients  sellerMCPRegistry
+	routerCA *x509.Certificate
 }
 
-func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, routerCAFile string, listener *tls.Config) error {
-	if clientID == "" && redirect == "" {
-		return nil
+func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, routerCAFile string, listener *tls.Config, extra ...SellerMCPClient) error {
+	clients, err := newSellerMCPRegistry(clientID, redirect, extra)
+	if err != nil {
+		return err
 	}
-	if clientID == "" || len(clientID) > 128 || !validMCPRedirect(redirect) {
-		return errors.New("invalid pre-registered seller MCP client or redirect")
+	if len(clients) == 0 {
+		return nil
 	}
 	grants, ok := h.store.(store.MCPGrantStore)
 	if !ok {
@@ -73,7 +75,7 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 		}
 		return nil
 	})
-	o := &sellerOAuth{Handler: h, grants: grants, clientID: clientID, redirect: redirect, routerCA: ca}
+	o := &sellerOAuth{Handler: h, grants: grants, clients: clients, routerCA: ca}
 	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
 	mux.HandleFunc("POST /svc/authn/mcp/eligible", o.eligible)
@@ -96,8 +98,14 @@ func validMCPResource(resource string) bool {
 
 func validMCPRedirect(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.ForceQuery {
+	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.ForceQuery || u.Opaque != "" || strings.ContainsAny(raw, "*#") || strings.HasSuffix(u.Host, ":") {
 		return false
+	}
+	if u.Port() != "" {
+		port, err := strconv.Atoi(u.Port())
+		if err != nil || port < 1 || port > 65535 {
+			return false
+		}
 	}
 	loopback := u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost"
 	return u.Scheme == "https" || (u.Scheme == "http" && loopback)
@@ -134,22 +142,23 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	q, err := url.ParseQuery(r.URL.RawQuery)
 	challenge, decodeErr := base64.RawURLEncoding.Strict().DecodeString(q.Get("code_challenge"))
+	clientID, redirect := q.Get("client_id"), q.Get("redirect_uri")
 	if err != nil || len(r.URL.RawQuery) > 4096 || !uniqueParams(q) ||
-		q.Get("response_type") != "code" || q.Get("client_id") != o.clientID || q.Get("redirect_uri") != o.redirect ||
+		q.Get("response_type") != "code" || !o.clients.allows(clientID, redirect) ||
 		q.Get("scope") != store.APIKeyScopeAnalyticsRead || !validMCPResource(q.Get("resource")) ||
 		q.Get("code_challenge_method") != "S256" || decodeErr != nil || len(challenge) != 32 || len(q.Get("state")) > 512 {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
 	id, browser := randomToken(), randomToken()
-	err = o.grants.BeginMCP(r.Context(), store.MCPRequest{ID: id, BrowserHash: hashValue(browser), ClientID: o.clientID, RedirectURI: o.redirect, State: q.Get("state"), Challenge: q.Get("code_challenge")})
+	err = o.grants.BeginMCP(r.Context(), store.MCPRequest{ID: id, BrowserHash: hashValue(browser), ClientID: clientID, RedirectURI: redirect, State: q.Get("state"), Challenge: q.Get("code_challenge")})
 	if err != nil {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
 	http.SetCookie(w, &http.Cookie{Name: consentCookie, Value: browser, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: 300})
 	// The existing portal accepts this URL during a rolling upgrade. The account UI forwards it to /mcp.
-	http.Redirect(w, r, sellerOrigin+"/developer-api?"+url.Values{"mcp_request": {id}, "mcp_client": {o.clientID}}.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, sellerOrigin+"/developer-api?"+url.Values{"mcp_request": {id}, "mcp_client": {clientID}}.Encode(), http.StatusSeeOther)
 }
 
 func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
@@ -173,7 +182,11 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
-		(in.SessionDays != 0 && in.SessionDays != store.MCPConnectionDays) || in.Client != o.clientID || (in.Decision != "approve" && in.Decision != "deny") {
+		(in.SessionDays != 0 && in.SessionDays != store.MCPConnectionDays) || (in.Decision != "approve" && in.Decision != "deny") {
+		oauthError(w, 400, "invalid_request")
+		return
+	}
+	if _, known := o.clients[in.Client]; !known {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -203,7 +216,16 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
 	}
-	binding := store.MCPRequest{SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: o.clientID, RedirectURI: o.redirect}
+	binding := store.MCPRequest{SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: in.Client}
+	binding.RedirectURI, err = o.grants.MCPRequestRedirect(r.Context(), binding)
+	if errors.Is(err, store.ErrNotFound) || err == nil && !o.clients.allows(in.Client, binding.RedirectURI) {
+		oauthError(w, 400, "invalid_request")
+		return
+	}
+	if err != nil {
+		oauthError(w, 503, "temporarily_unavailable")
+		return
+	}
 	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_request")
@@ -243,18 +265,19 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 	refresh := "aurum_refresh_" + randomToken()
 	var lifetime store.MCPTokenLifetime
 	var err error
-	if q.Get("client_id") != o.clientID {
+	clientID := q.Get("client_id")
+	if _, known := o.clients[clientID]; !known {
 		oauthError(w, 400, "invalid_grant")
 		return
 	}
 	switch q.Get("grant_type") {
 	case "authorization_code":
-		if q.Get("redirect_uri") != o.redirect || !validMCPResource(q.Get("resource")) ||
+		if !o.clients.allows(clientID, q.Get("redirect_uri")) || !validMCPResource(q.Get("resource")) ||
 			!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		lifetime, err = o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), o.clientID, o.redirect, oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access), hashValue(refresh))
+		lifetime, err = o.grants.RedeemMCP(r.Context(), hashValue(q.Get("code")), clientID, q.Get("redirect_uri"), oauth2.S256ChallengeFromVerifier(q.Get("code_verifier")), hashValue(access), hashValue(refresh))
 	case "refresh_token":
 		// Omitted scope/resource retain the original single-audience grant.
 		if (q.Has("resource") && !validMCPResource(q.Get("resource"))) || (q.Has("scope") && q.Get("scope") != store.APIKeyScopeAnalyticsRead) ||
@@ -262,7 +285,7 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 400, "invalid_grant")
 			return
 		}
-		lifetime, err = o.grants.RefreshMCP(r.Context(), o.clientID, hashValue(q.Get("refresh_token")), hashValue(access), hashValue(refresh))
+		lifetime, err = o.grants.RefreshMCP(r.Context(), clientID, hashValue(q.Get("refresh_token")), hashValue(access), hashValue(refresh))
 	default:
 		oauthError(w, 400, "unsupported_grant_type")
 		return

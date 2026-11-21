@@ -25,6 +25,19 @@ func (s *Store) BeginMCP(ctx context.Context, r store.MCPRequest) error {
 	})
 }
 
+// MCPRequestRedirect exposes only the callback of this browser/client-bound,
+// unexpired transaction. DecideMCP still consumes the exact binding atomically.
+func (s *Store) MCPRequestRedirect(ctx context.Context, request store.MCPRequest) (string, error) {
+	var redirect string
+	err := s.pool.QueryRow(ctx, `SELECT redirect_uri FROM seller_mcp_requests
+        WHERE id=$1 AND browser_hash=$2 AND client_id=$3 AND expires_at>now()`,
+		request.ID, request.BrowserHash, request.ClientID).Scan(&redirect)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", store.ErrNotFound
+	}
+	return redirect, err
+}
+
 func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner uuid.UUID, selection store.MCPSelection, codeHash string) (store.MCPDecision, error) {
 	var r store.MCPDecision
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {

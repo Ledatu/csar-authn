@@ -48,6 +48,7 @@ type MCPGrant struct {
 }
 type MCPGrantStore interface {
 	BeginMCP(context.Context, MCPRequest) error
+	MCPRequestRedirect(context.Context, MCPRequest) (string, error)
 	DecideMCP(ctx context.Context, request MCPRequest, owner uuid.UUID, selection MCPSelection, codeHash string) (MCPDecision, error)
 	RedeemMCP(ctx context.Context, codeHash, client, redirect, challenge, accessHash, refreshHash string) (MCPTokenLifetime, error)
 	RefreshMCP(ctx context.Context, client, presentedHash, accessHash, refreshHash string) (MCPTokenLifetime, error)
