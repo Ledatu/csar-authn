@@ -31,9 +31,16 @@ type CallerRegistryStore interface {
 	RevokeCaller(context.Context, uuid.UUID, uuid.UUID) (*Caller, error)
 }
 
+// CallerCredentialStore resolves an already authenticated credential.
+// ErrNotFound means unregistered legacy input, never an inferred caller kind.
+type CallerCredentialStore interface {
+	CallerForCredential(context.Context, uuid.UUID, caller.CredentialKind, string) (*Caller, error)
+}
+
 var (
 	ErrCallerLimit         = errors.New("active caller limit reached")
 	ErrCallerAuditRequired = errors.New("caller mutations require transactional audit")
+	ErrCallerBinding       = errors.New("credential caller binding is inconsistent")
 )
 
 func (c *Caller) ValidateRegistration() error {

@@ -12,6 +12,7 @@ import (
 // APICredential is a seller-owned, read-only personal API credential. The raw
 // token is never stored; TokenHash is the SHA-256 hex digest of its random value.
 type APICredential struct {
+	CallerID   *uuid.UUID `json:"caller_id,omitempty"`
 	ID         uuid.UUID  `json:"id"`
 	OwnerID    uuid.UUID  `json:"-"`
 	SellerID   string     `json:"seller_id"`

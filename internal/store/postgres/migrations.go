@@ -451,6 +451,16 @@ CREATE TABLE registered_callers (
 );
 CREATE INDEX registered_callers_active_owner ON registered_callers(owner_user_id,created_at DESC) WHERE revoked_at IS NULL;
 `},
+	{Name: "027_caller_credential_bindings", Up: `
+CREATE TABLE registered_caller_credentials (
+ credential_kind text NOT NULL CHECK(credential_kind IN ('api_key','oauth_access')),
+ credential_id text NOT NULL CHECK(char_length(credential_id) BETWEEN 1 AND 256),
+ caller_id uuid NOT NULL, owner_user_id uuid NOT NULL,
+ PRIMARY KEY(credential_kind,credential_id),
+ FOREIGN KEY(owner_user_id,caller_id) REFERENCES registered_callers(owner_user_id,id) ON DELETE CASCADE
+);
+CREATE INDEX registered_caller_credentials_caller ON registered_caller_credentials(caller_id);
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

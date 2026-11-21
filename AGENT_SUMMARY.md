@@ -1,5 +1,11 @@
 # csar-authn Agent Summary
 
+Migration 027 adds immutable generic credential-to-caller bindings. New API keys
+can bind in the same audited transaction; legacy rows are not backfilled. Caller
+revocation atomically invalidates bound API keys and MCP grants/connections.
+Lookup distinguishes missing legacy binding from revoked/mismatched registration;
+do not downgrade the latter to unknown. HTTP/token response adoption follows.
+
 ## W1 caller registry storage (source only)
 
 Migration 026 adds owner-scoped agent/application registrations with immutable
