@@ -58,6 +58,7 @@ func (h *Handler) handleValidateWithTokens(w http.ResponseWriter, r *http.Reques
 	}
 
 	resp := authntokens.ValidateResponse{
+		Identity: sessionIdentity(sess, user),
 		Headers: map[string]string{
 			"X-User-ID":              user.ID.String(),
 			"X-User-Email":           user.Email,

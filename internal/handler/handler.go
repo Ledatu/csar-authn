@@ -120,6 +120,9 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	// Current user's active sessions: GET /auth/me/sessions
 	mux.HandleFunc("GET /auth/me/sessions", h.handleMeSessions)
 	mux.HandleFunc("GET /auth/me/api-keys", h.handleListAPIKeys)
+	mux.HandleFunc("GET /auth/me/callers", h.handleListCallers)
+	mux.HandleFunc("POST /auth/me/callers", h.handleCreateCaller)
+	mux.HandleFunc("DELETE /auth/me/callers/{caller_id}", h.handleRevokeCaller)
 	mux.HandleFunc("POST /auth/me/api-keys", h.handleCreateAPIKey)
 	mux.HandleFunc("DELETE /auth/me/api-keys/{key_id}", h.handleRevokeAPIKey)
 	mux.HandleFunc("POST /auth/me/sessions/revoke-others", h.handleRevokeOtherMeSessions)
