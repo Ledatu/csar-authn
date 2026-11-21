@@ -1,5 +1,11 @@
 # csar-authn Agent Summary
 
+New signed session/STS JWTs include versioned caller metadata. Session JWTs
+identify their user principal; reusable STS JWTs contain only the service hop,
+without per-user/origin context. Old tokens retain absent metadata and existing
+expiry. Cookie bearer IDs and token hashes are not used as credential references.
+Gateway verification/forwarding and signed origin delegation remain W2 work.
+
 MCP consent optionally binds an owner caller in the grant/audit transaction.
 Introspection preserves that caller across access refresh and one-use proofs,
 with separate client/connection metadata. Unbound grants remain unknown; the
