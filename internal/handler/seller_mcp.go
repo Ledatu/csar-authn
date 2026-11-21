@@ -19,6 +19,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/authntokens"
+	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/httpx"
 	"golang.org/x/oauth2"
 )
@@ -174,11 +175,12 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(consentCookie)
 	var in struct {
 		store.MCPSelection
-		SessionDays int    `json:"session_days"`
-		Request     string `json:"request"`
-		Seller      string `json:"seller_id"`
-		Decision    string `json:"decision"`
-		Client      string `json:"client_id"`
+		SessionDays int        `json:"session_days"`
+		Request     string     `json:"request"`
+		Seller      string     `json:"seller_id"`
+		Decision    string     `json:"decision"`
+		Client      string     `json:"client_id"`
+		CallerID    *uuid.UUID `json:"caller_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
@@ -216,7 +218,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
 	}
-	binding := store.MCPRequest{SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: in.Client}
+	binding := store.MCPRequest{CallerID: in.CallerID, SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: in.Client}
 	binding.RedirectURI, err = o.grants.MCPRequestRedirect(r.Context(), binding)
 	if errors.Is(err, store.ErrNotFound) || err == nil && !o.clients.allows(in.Client, binding.RedirectURI) {
 		oauthError(w, 400, "invalid_request")
@@ -401,15 +403,32 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 		}
 		g.SellerID = requested
 	}
+	identity, err := o.credentialIdentity(r.Context(), g.OwnerID, caller.OAuthAccess, g.ID.String())
+	if errors.Is(err, errCallerRevoked) {
+		httpx.WriteJSON(w, http.StatusOK, map[string]bool{"active": false})
+		return
+	}
+	if err != nil {
+		oauthError(w, 503, "temporarily_unavailable")
+		return
+	}
+	identity.ClientID, identity.ConnectionID = g.ClientID, g.ID.String()
+	if !delegate {
+		identity.CredentialKind = caller.DelegationProof
+	}
+	if err := identity.Validate(); err != nil {
+		oauthError(w, 503, "temporarily_unavailable")
+		return
+	}
 	if portable {
-		result := authntokens.DelegationResult{Active: true, Purpose: request.Purpose, Audience: mcpResource, Scope: store.APIKeyScopeAnalyticsRead, Subject: g.OwnerID.String(), CredentialID: g.ID.String(), ExpiresAt: g.ExpiresAt, DelegatedToken: proof, ResourceID: request.ResourceID}
+		result := authntokens.DelegationResult{Identity: identity, Active: true, Purpose: request.Purpose, Audience: mcpResource, Scope: store.APIKeyScopeAnalyticsRead, Subject: g.OwnerID.String(), CredentialID: g.ID.String(), ExpiresAt: g.ExpiresAt, DelegatedToken: proof, ResourceID: request.ResourceID}
 		if !discovery && g.SellerID != "" {
 			result.Tenant = "wildberries:" + g.SellerID
 		}
 		httpx.WriteJSON(w, http.StatusOK, result)
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"active": true, "account_grant": account || discovery, "discovery": discovery, "subject": g.OwnerID, "credential_id": g.ID, "seller_id": g.SellerID, "scopes": []string{store.APIKeyScopeAnalyticsRead}, "expires_at": g.ExpiresAt, "delegated_token": proof})
+	httpx.WriteJSON(w, 200, map[string]any{"identity": identity, "active": true, "account_grant": account || discovery, "discovery": discovery, "subject": g.OwnerID, "credential_id": g.ID, "seller_id": g.SellerID, "scopes": []string{store.APIKeyScopeAnalyticsRead}, "expires_at": g.ExpiresAt, "delegated_token": proof})
 }
 func (o *sellerOAuth) connections(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
