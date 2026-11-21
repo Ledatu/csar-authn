@@ -441,6 +441,16 @@ CREATE TABLE seller_mcp_refresh_tokens (
 CREATE INDEX seller_mcp_refresh_grant ON seller_mcp_refresh_tokens(grant_id);
 CREATE UNIQUE INDEX seller_mcp_refresh_current ON seller_mcp_refresh_tokens(grant_id) WHERE NOT spent;
 `},
+	{Name: "026_caller_registry", Up: `
+CREATE TABLE registered_callers (
+ id uuid PRIMARY KEY, owner_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ caller_kind text NOT NULL CHECK (caller_kind IN ('agent','application')),
+ label text NOT NULL CHECK (char_length(label) BETWEEN 1 AND 80),
+ created_at timestamptz NOT NULL DEFAULT clock_timestamp(), revoked_at timestamptz,
+ UNIQUE(owner_user_id,id)
+);
+CREATE INDEX registered_callers_active_owner ON registered_callers(owner_user_id,created_at DESC) WHERE revoked_at IS NULL;
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

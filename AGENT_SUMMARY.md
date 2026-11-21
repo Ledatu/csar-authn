@@ -1,5 +1,13 @@
 # csar-authn Agent Summary
 
+## W1 caller registry storage (source only)
+
+Migration 026 adds owner-scoped agent/application registrations with immutable
+kind/owner and stable IDs independent of credentials. Creation/revocation require
+the existing transactional audit outbox; no async fallback. Listing is explicitly
+active-only and bounded. HTTP registration and token bindings follow separately;
+human/service principals retain their existing issuer stores. No production DDL.
+
 ## Hosted seller OAuth
 
 The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour campaign grants in PostgreSQL. The primary MCP_OAUTH_CLIENT_ID/MCP_OAUTH_REDIRECT_URI pair and optional MCP_OAUTH_CLIENTS JSON define startup-only public registrations. An empty registry disables these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
