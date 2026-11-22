@@ -9,6 +9,11 @@ import (
 	"os"
 )
 
+type routerCARegistration struct {
+	ca   *x509.Certificate
+	pool *x509.CertPool
+}
+
 // registerRouterCA is startup-only. Dedicated gateway ingress may share a CA
 // between issuer features but must never inherit the general service trust root.
 func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Certificate, error) {
@@ -28,8 +33,8 @@ func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Cer
 		return nil, errors.New("invalid dedicated router CA")
 	}
 	for _, known := range h.routerCAs {
-		if ca.Equal(known) {
-			return known, nil
+		if ca.Equal(known.ca) && known.pool == listener.ClientCAs {
+			return known.ca, nil
 		}
 	}
 	if _, err := ca.Verify(x509.VerifyOptions{Roots: listener.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err == nil {
@@ -41,7 +46,7 @@ func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Cer
 		}
 		return nil
 	})
-	h.routerCAs = append(h.routerCAs, ca)
+	h.routerCAs = append(h.routerCAs, routerCARegistration{ca: ca, pool: listener.ClientCAs})
 	return ca, nil
 }
 

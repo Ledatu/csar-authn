@@ -107,6 +107,12 @@ func TestOriginRegistrationIsOptInAndReusesDedicatedTrust(t *testing.T) {
 	if err := h.RegisterOriginContext(http.NewServeMux(), file, listener); err != nil {
 		t.Fatal("dedicated trust cannot be shared", err)
 	}
+	otherPool := x509.NewCertPool()
+	otherPool.AddCert(ca)
+	otherListener := &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: otherPool}
+	if err := h.RegisterOriginContext(http.NewServeMux(), file, otherListener); err == nil {
+		t.Fatal("cached registration bypassed another listener's general trust")
+	}
 	other, _, _ := newSessionsHandler(t, nil)
 	if err := other.RegisterOriginContext(http.NewServeMux(), file, listener); err == nil {
 		t.Fatal("general trust imported as dedicated")
