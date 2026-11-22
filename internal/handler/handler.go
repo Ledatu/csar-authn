@@ -7,8 +7,10 @@ import (
 	"log/slog"
 	"net/http"
 	"sync/atomic"
+	"time"
 
 	"github.com/ledatu/csar-core/audit"
+	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/gatewayctx"
 	"github.com/ledatu/csar-core/httpx"
 
@@ -350,7 +352,13 @@ func (h *Handler) handleValidate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-User-ID", user.ID.String())
 	w.Header().Set("X-User-Email", user.Email)
 	w.Header().Set(gatewayctx.HeaderSubject, user.ID.String())
-	if sess != nil && sess.ImpersonatorUserID != nil {
+	if err := gatewayctx.SetCaller(w.Header(), sessionIdentity(sess, user)); err != nil {
+		http.Error(w, "session metadata unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	w.Header().Set(authntokens.HeaderSessionExpiresAt, sess.ExpiresAt.UTC().Format(time.RFC3339Nano))
+	w.Header().Set("Cache-Control", "no-store")
+	if sess.ImpersonatorUserID != nil {
 		w.Header().Set("X-Impersonator-ID", sess.ImpersonatorUserID.String())
 	}
 	w.WriteHeader(http.StatusOK)
