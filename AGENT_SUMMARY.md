@@ -1,5 +1,12 @@
 # csar-authn Agent Summary
 
+Owner-session caller handlers register/list/revoke identities with the existing
+credential origin/impersonation guard. API-key creation accepts optional caller_id;
+introspection resolves authoritative binding, preserves legacy unknown and fails
+closed on revoked/inconsistent lookup. Session POST validation distinguishes
+human owner from effective impersonated subject; raw session IDs are not exposed.
+CSAR header adoption/public route configuration remain W2/deployment work.
+
 Migration 027 adds immutable generic credential-to-caller bindings. New API keys
 can bind in the same audited transaction; legacy rows are not backfilled. Caller
 revocation atomically invalidates bound API keys and MCP grants/connections.

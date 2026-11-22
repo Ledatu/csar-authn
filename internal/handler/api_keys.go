@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/audit"
+	"github.com/ledatu/csar-core/caller"
 	csarerrors "github.com/ledatu/csar-core/errors"
 	"github.com/ledatu/csar-core/httpx"
 	pb "github.com/ledatu/csar-proto/csar/authz/v1"
@@ -108,6 +109,7 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		SellerID string          `json:"seller_id"`
 		Label    string          `json:"label"`
 		Scopes   json.RawMessage `json:"scopes"`
+		CallerID *uuid.UUID      `json:"caller_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	decoder := json.NewDecoder(r.Body)
@@ -140,11 +142,19 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	raw := prefix + randomToken()
 
 	key := &store.APICredential{
-		ID: uuid.New(), OwnerID: user.ID, SellerID: body.SellerID, Label: body.Label,
+		ID: uuid.New(), OwnerID: user.ID, CallerID: body.CallerID, SellerID: body.SellerID, Label: body.Label,
 		TokenHash: hashValue(raw), Prefix: raw[:len(prefix)+8], Scopes: scopes,
 		ExpiresAt: time.Now().UTC().Add(apiKeyLifetime),
 	}
 	if err := keys.CreateAPICredential(r.Context(), key, maxActiveAPIKeys); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			httpx.WriteError(w, csarerrors.NotFound("caller not found"))
+			return
+		}
+		if errors.Is(err, store.ErrCallerAuditRequired) {
+			httpx.WriteError(w, csarerrors.Unavailable("caller audit unavailable"))
+			return
+		}
 		if errors.Is(err, store.ErrAPICredentialLimit) {
 			httpx.WriteError(w, csarerrors.Conflict("active API key limit reached"))
 			return
@@ -278,9 +288,29 @@ func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request)
 		httpx.WriteError(w, csarerrors.Unavailable("API key scope data unavailable"))
 		return
 	}
+	if key.CallerID != nil {
+		if _, ok := h.store.(store.CallerCredentialStore); !ok {
+			httpx.WriteError(w, csarerrors.Unavailable("caller binding unavailable"))
+			return
+		}
+	}
+	identity, err := h.credentialIdentity(r.Context(), key.OwnerID, caller.APIKey, key.ID.String())
+	if errors.Is(err, errCallerRevoked) {
+		httpx.WriteJSON(w, http.StatusOK, map[string]any{"active": false})
+		return
+	}
+	if err != nil {
+		httpx.WriteError(w, csarerrors.Unavailable("caller binding unavailable"))
+		return
+	}
+	if key.CallerID != nil && identity.CallerID != key.CallerID.String() {
+		httpx.WriteError(w, csarerrors.Unavailable("caller binding unavailable"))
+		return
+	}
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, http.StatusOK, map[string]any{
-		"active": true, "subject": key.OwnerID.String(), "credential_id": key.ID.String(),
+		"identity": identity,
+		"active":   true, "subject": key.OwnerID.String(), "credential_id": key.ID.String(),
 		"seller_id": key.SellerID, "scopes": key.Scopes,
 		"expires_at": key.ExpiresAt,
 	})
