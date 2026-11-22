@@ -9,6 +9,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/jwtx"
+	"github.com/ledatu/csar-core/origincontext"
 )
 
 // Claims represents the JWT payload issued by csar-authn.
@@ -120,6 +121,9 @@ func (m *Manager) VerifyToken(tokenStr string) (*Claims, error) {
 	}
 
 	// Re-parse claims into the typed struct for backward compatibility.
+	if vt.Claims["token_use"] == origincontext.TokenUse {
+		return nil, fmt.Errorf("origin proof is not an access token")
+	}
 	claimBytes, err := json.Marshal(vt.Claims)
 	if err != nil {
 		return nil, fmt.Errorf("re-marshalling claims: %w", err)

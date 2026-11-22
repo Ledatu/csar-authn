@@ -463,6 +463,9 @@ func run(
 		return err
 	}
 
+	if err := h.RegisterOriginContext(mux, os.Getenv("ORIGIN_ROUTER_CA_FILE"), srv.TLSConfig()); err != nil {
+		return err
+	}
 	runErr := srv.Run(ctx)
 	if healthSidecar != nil {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)

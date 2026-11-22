@@ -1,16 +1,13 @@
 package handler
 
 import (
-	"bytes"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
-	"encoding/pem"
 	"errors"
 	"mime"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
 	"slices"
 	"strconv"
@@ -52,30 +49,10 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 	if !ok {
 		return errors.New("seller MCP requires a grant store")
 	}
-	if listener == nil || listener.ClientAuth != tls.RequireAndVerifyClientCert || listener.ClientCAs == nil {
-		return errors.New("seller MCP requires a verified client TLS listener")
-	}
-	data, err := os.ReadFile(routerCAFile)
+	ca, err := h.registerRouterCA(routerCAFile, listener)
 	if err != nil {
 		return err
 	}
-	block, rest := pem.Decode(data)
-	if block == nil || block.Type != "CERTIFICATE" || len(bytes.TrimSpace(rest)) != 0 {
-		return errors.New("seller MCP requires one dedicated router CA certificate")
-	}
-	ca, err := x509.ParseCertificate(block.Bytes)
-	if err != nil || !ca.IsCA {
-		return errors.New("invalid seller router CA")
-	}
-	if _, err := ca.Verify(x509.VerifyOptions{Roots: listener.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err == nil {
-		return errors.New("seller router CA must be separate from general service trust")
-	}
-	listener.ClientCAs.AddCertWithConstraint(ca, func(chain []*x509.Certificate) error {
-		if len(chain) == 0 || chain[0].Subject.CommonName != sellerRouterCN {
-			return errors.New("unexpected seller router identity")
-		}
-		return nil
-	})
 	o := &sellerOAuth{Handler: h, grants: grants, clients: clients, routerCA: ca}
 	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
@@ -310,14 +287,7 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 // The listener also trusts the general service CA. Delegation requires a chain
 // rooted in the dedicated seller router CA, even when another leaf has the same name.
 func (o *sellerOAuth) verifiedRouter(state *tls.ConnectionState) bool {
-	if state != nil {
-		for _, chain := range state.VerifiedChains {
-			if len(chain) >= 2 && chain[0].Subject.CommonName == sellerRouterCN && chain[len(chain)-1].Equal(o.routerCA) {
-				return true
-			}
-		}
-	}
-	return false
+	return verifiedRouterCA(state, o.routerCA)
 }
 
 func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {

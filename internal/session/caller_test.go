@@ -10,6 +10,7 @@ import (
 	"github.com/ledatu/csar-core/authnconfig"
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/jwtx"
+	"github.com/ledatu/csar-core/origincontext"
 )
 
 func TestHistoricalServiceNamesKeepSTSCompatibility(t *testing.T) {
@@ -60,6 +61,15 @@ func TestSignedCallerMetadataAndLegacyCompatibility(t *testing.T) {
 		t.Fatal("reusable service token acquired user/origin context")
 	}
 	legacyClaims := jwt.MapClaims{"sub": "user:1", "iss": "test", "aud": "session", "exp": time.Now().Add(time.Hour).Unix()}
+	legacyClaims["token_use"] = origincontext.TokenUse
+	reserved, err := jwtx.Sign(keys, legacyClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.VerifyToken(reserved); err == nil {
+		t.Fatal("origin purpose accepted as access token")
+	}
+	delete(legacyClaims, "token_use")
 	legacy, err := jwtx.Sign(keys, legacyClaims)
 	if err != nil {
 		t.Fatal(err)
