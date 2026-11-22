@@ -1,5 +1,15 @@
 # csar-authn Agent Summary
 
+Origin attribution issuance is opt-in via ORIGIN_ROUTER_CA_FILE. Startup requires
+verified mTLS with the dedicated router CA and aurum-api-router-client leaf CN;
+general service trust cannot assert root callers. Existing MCP and origin issuer
+features reuse the same dedicated ingress registration. Root receives only a
+gateway-verified principal and source deadline. Delegation additionally requires
+gateway-confirmed service/STS metadata and a parent addressed to that service.
+All JWT access verifiers must reject reserved origin purpose before activation.
+No production route/CA/env rollout is included; root-client wiring and confirmed
+audit release remain separate acceptance gates.
+
 W2 session validation returns caller metadata on both the existing header-only
 GET and JSON POST contracts, plus the validated session deadline. Responses are
 no-store; raw session cookie values are never credential references. CSAR must

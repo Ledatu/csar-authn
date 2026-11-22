@@ -29,6 +29,7 @@ import (
 // cfg is stored behind an atomic pointer so config changes are visible to
 // request handlers without restarting the service.
 type Handler struct {
+	routerCAs       []routerCARegistration // startup-only dedicated ingress registration
 	store           store.Store
 	sessionMgr      *session.Manager
 	sessMgr         *session.SessionManager
