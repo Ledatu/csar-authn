@@ -1,5 +1,11 @@
 # csar-authn Agent Summary
 
+MCP consent optionally binds an owner caller in the grant/audit transaction.
+Introspection preserves that caller across access refresh and one-use proofs,
+with separate client/connection metadata. Unbound grants remain unknown; the
+MCP transport/client name does not classify a caller. No callback/grant expansion
+or route configuration is included. Local MCP lifecycle tests cover both modes.
+
 Owner-session caller handlers register/list/revoke identities with the existing
 credential origin/impersonation guard. API-key creation accepts optional caller_id;
 introspection resolves authoritative binding, preserves legacy unknown and fails

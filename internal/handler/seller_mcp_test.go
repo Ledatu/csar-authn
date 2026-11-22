@@ -23,6 +23,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-authn/internal/store/postgres"
 	"github.com/ledatu/csar-core/authntokens"
+	"github.com/ledatu/csar-core/caller"
 	pb "github.com/ledatu/csar-proto/csar/authz/v1"
 	"golang.org/x/oauth2"
 )
@@ -30,6 +31,7 @@ import (
 type mcpFixtureStore struct {
 	store.Store
 	store.MCPGrantStore
+	store.CallerCredentialStore
 }
 
 // Uses an isolated localhost PostgreSQL fixture. Login and the Authz decision use
@@ -41,13 +43,17 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 				callback = "http://127.0.0.1:33418" + strings.TrimPrefix(callback, "http://127.0.0.1")
 			}
 			t.Run(client.ClientID+"/"+callback, func(t *testing.T) {
-				testSellerMCPGrantLifecycle(t, client.ClientID, callback)
+				testSellerMCPGrantLifecycle(t, client.ClientID, callback, false)
 			})
 		}
 	}
 }
 
-func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
+func TestRegisteredSellerMCPGrantLifecycle(t *testing.T) {
+	testSellerMCPGrantLifecycle(t, "codex", "http://127.0.0.1:48973/oauth/callback", true)
+}
+
+func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCaller bool) {
 	dsn := os.Getenv("MCP_TEST_DATABASE_URL")
 	if dsn == "" {
 		t.Skip("set MCP_TEST_DATABASE_URL to run PostgreSQL grant lifecycle")
@@ -72,7 +78,22 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 		t.Fatal(err)
 	}
 	th, _, session := apiKeyScopeHarness(t)
-	th.handler.store = mcpFixtureStore{th.store, db}
+	th.handler.store = mcpFixtureStore{th.store, db, db}
+	var registered *store.Caller
+	if bindCaller {
+		if _, err := db.EnableAuditOutbox(t.Context()); err != nil {
+			t.Fatal(err)
+		}
+		registered = &store.Caller{ID: uuid.New(), OwnerID: testUserID, Kind: caller.Agent, Label: "MCP worker"}
+		if err := db.CreateCaller(t.Context(), registered, 20); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() {
+			if _, err := db.RevokeCaller(context.Background(), testUserID, registered.ID); err != nil {
+				t.Error(err)
+			}
+		})
+	}
 	seller := uuid.NewString()
 	var allowed atomic.Bool
 	th.mock.checkAccessFn = func(_ context.Context, r *pb.CheckAccessRequest) (*pb.CheckAccessResponse, error) {
@@ -111,6 +132,9 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 	selection := map[string]any{"seller_id": seller}
 	decide := func(origin string, addBrowserCookie bool) *httptest.ResponseRecorder {
 		fields := map[string]any{"client_id": consentClient, "decision": decision, "request": dest.Query().Get("mcp_request")}
+		if registered != nil {
+			fields["caller_id"] = registered.ID.String()
+		}
 		for k, v := range selection {
 			fields[k] = v
 		}
@@ -247,10 +271,11 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 		return w.Code, pair
 	}
 	type response struct {
-		Active bool
-		Proof  string `json:"delegated_token"`
-		Grant  string `json:"credential_id"`
-		Seller string `json:"seller_id"`
+		Identity *caller.Identity `json:"identity"`
+		Active   bool
+		Proof    string `json:"delegated_token"`
+		Grant    string `json:"credential_id"`
+		Seller   string `json:"seller_id"`
 	}
 	intro := func(op, token string, sellers ...string) response {
 		data := map[string]string{"token": token}
@@ -265,6 +290,9 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 		var out response
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil {
 			t.Errorf("introspection %s=%d", op, w.Code)
+		}
+		if out.Active {
+			assertMCPCaller(t, out.Identity, registered, client)
 		}
 		return out
 	}
@@ -281,6 +309,9 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 		var result authntokens.DelegationResult
 		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &result) != nil {
 			t.Fatalf("delegation endpoint status %d", w.Code)
+		}
+		if result.Active {
+			assertMCPCaller(t, result.Identity, registered, client)
 		}
 		return result
 	}
@@ -473,6 +504,20 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string) {
 		}
 	}
 
+}
+
+func assertMCPCaller(t *testing.T, id *caller.Identity, registered *store.Caller, client string) {
+	t.Helper()
+	if id == nil || id.Validate() != nil || id.ClientID != client || id.ConnectionID == "" {
+		t.Fatal("missing issuer-bound caller/client/connection")
+	}
+	if registered == nil {
+		if id.CallerKind != caller.Unknown || id.CallerID != "" {
+			t.Fatal("legacy MCP transport inferred caller identity")
+		}
+	} else if id.CallerKind != caller.Agent || id.CallerID != registered.ID.String() {
+		t.Fatal("MCP refresh/delegation changed registered caller")
+	}
 }
 
 func TestDelegationRequiresDedicatedRouterCA(t *testing.T) {

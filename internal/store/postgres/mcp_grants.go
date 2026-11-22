@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/pgutil"
 )
 
@@ -55,8 +56,12 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 			singleton = &selected[0]
 			selected = nil
 		}
-		return tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids,access_expires_at)
+		err = tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids,access_expires_at)
   VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 minute',CASE WHEN $9::int>0 THEN now()+make_interval(days=>$9) ELSE now()+interval '1 minute' END,$7,coalesce($8::text[],'{}'),CASE WHEN $9>0 THEN now() END) RETURNING id`, owner, singleton, request.ClientID, r.RedirectURI, challenge, codeHash, selection.AllCampaigns, selected, request.SessionDays).Scan(&r.GrantID)
+		if err != nil || request.CallerID == nil {
+			return err
+		}
+		return s.bindCallerTx(ctx, tx, owner, *request.CallerID, caller.OAuthAccess, r.GrantID.String())
 	})
 	return r, err
 }
