@@ -80,6 +80,14 @@ RETURNING id,owner_user_id,caller_kind,label,created_at,revoked_at`, id, owner).
 		if err != nil {
 			return err
 		}
+		if _, err := tx.Exec(ctx, `UPDATE seller_api_credentials SET revoked_at=clock_timestamp()
+WHERE owner_user_id=$2 AND id::text IN (SELECT credential_id FROM registered_caller_credentials WHERE caller_id=$1 AND credential_kind='api_key') AND revoked_at IS NULL`, id, owner); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE owner_id=$2 AND id::text IN
+(SELECT credential_id FROM registered_caller_credentials WHERE caller_id=$1 AND credential_kind='oauth_access')`, id, owner); err != nil {
+			return err
+		}
 		return s.enqueueCaller(ctx, tx, "credentials.caller.revoke", &c)
 	})
 	if err != nil {
