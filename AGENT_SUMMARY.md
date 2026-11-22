@@ -5,6 +5,8 @@ identify their user principal; reusable STS JWTs contain only the service hop,
 without per-user/origin context. Old tokens retain absent metadata and existing
 expiry. Cookie bearer IDs and token hashes are not used as credential references.
 Gateway verification/forwarding and signed origin delegation remain W2 work.
+Historical service names outside the bounded caller-reference syntax retain
+their existing STS subject/issuance with absent optional metadata.
 
 MCP consent optionally binds an owner caller in the grant/audit transaction.
 Introspection preserves that caller across access refresh and one-use proofs,

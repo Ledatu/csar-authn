@@ -87,18 +87,19 @@ type STSClaims struct {
 func (m *Manager) IssueScopedToken(sub string, audiences []string, ttl time.Duration) (string, error) {
 	identity := &caller.Identity{Version: caller.Version, CallerKind: caller.Service, CallerID: sub,
 		EffectiveSubject: sub, CredentialKind: caller.STS, Assurance: caller.Verified}
-	if err := identity.Validate(); err != nil {
-		return "", err
-	}
 	now := time.Now()
 	claims := jwt.MapClaims{
-		"caller": identity,
-		"sub":    sub,
-		"iss":    m.cfg.Issuer,
-		"aud":    audiences,
-		"iat":    jwt.NewNumericDate(now),
-		"nbf":    jwt.NewNumericDate(now),
-		"exp":    jwt.NewNumericDate(now.Add(ttl)),
+		"sub": sub,
+		"iss": m.cfg.Issuer,
+		"aud": audiences,
+		"iat": jwt.NewNumericDate(now),
+		"nbf": jwt.NewNumericDate(now),
+		"exp": jwt.NewNumericDate(now.Add(ttl)),
+	}
+	// Historical service names were not restricted to caller-reference syntax.
+	// Preserve their subject and issuance, without asserting invalid metadata.
+	if identity.Validate() == nil {
+		claims["caller"] = identity
 	}
 	return jwtx.Sign(m.keys, claims)
 }

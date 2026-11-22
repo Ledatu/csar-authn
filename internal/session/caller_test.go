@@ -1,6 +1,7 @@
 package session
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +11,24 @@ import (
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/jwtx"
 )
+
+func TestHistoricalServiceNamesKeepSTSCompatibility(t *testing.T) {
+	keys, err := jwtx.GenerateKeyPair("EdDSA")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(keys, config.JWTConfig{Issuer: "test"})
+	for _, sub := range []string{"legacy worker", "старый-сервис", strings.Repeat("s", 257)} {
+		token, err := m.IssueScopedToken(sub, []string{"owner-input"}, time.Minute)
+		if err != nil {
+			t.Fatal("new metadata broke legacy STS issuance", err)
+		}
+		verified, err := jwtx.VerifyWithKey(token, keys.PublicKey, &jwtx.VerifyConfig{RequiredIssuer: "test", RequiredAudience: "owner-input", AllowedAlgorithms: []string{"EdDSA"}})
+		if err != nil || verified.Claims["sub"] != sub || verified.Claims["caller"] != nil {
+			t.Fatal("legacy subject changed or acquired invalid caller metadata", err)
+		}
+	}
+}
 
 func TestSignedCallerMetadataAndLegacyCompatibility(t *testing.T) {
 	keys, err := jwtx.GenerateKeyPair("EdDSA")
