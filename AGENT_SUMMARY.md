@@ -1,5 +1,10 @@
 # csar-authn Agent Summary
 
+W2 session validation returns caller metadata on both the existing header-only
+GET and JSON POST contracts, plus the validated session deadline. Responses are
+no-store; raw session cookie values are never credential references. CSAR must
+adopt the matching contract before expiry-bounded caller forwarding is active.
+
 New signed session/STS JWTs include versioned caller metadata. Session JWTs
 identify their user principal; reusable STS JWTs contain only the service hop,
 without per-user/origin context. Old tokens retain absent metadata and existing

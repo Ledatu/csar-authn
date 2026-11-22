@@ -58,13 +58,15 @@ func (h *Handler) handleValidateWithTokens(w http.ResponseWriter, r *http.Reques
 	}
 
 	resp := authntokens.ValidateResponse{
-		Identity: sessionIdentity(sess, user),
+		Identity:  sessionIdentity(sess, user),
+		ExpiresAt: sess.ExpiresAt,
 		Headers: map[string]string{
 			"X-User-ID":              user.ID.String(),
 			"X-User-Email":           user.Email,
 			gatewayctx.HeaderSubject: user.ID.String(),
 		},
 	}
+	w.Header().Set("Cache-Control", "no-store")
 	if sess.ImpersonatorUserID != nil {
 		resp.Headers["X-Impersonator-ID"] = sess.ImpersonatorUserID.String()
 	}

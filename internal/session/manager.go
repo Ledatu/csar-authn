@@ -118,6 +118,11 @@ func (sm *SessionManager) Validate(ctx context.Context, sessionID string) (*stor
 	if now.After(sess.CreatedAt.Add(sm.maxAge)) {
 		return nil, ErrSessionExpired
 	}
+	// Callers may cache this validation result. Return the actual deadline even
+	// for a fixed impersonation TTL or a session created under an older policy.
+	if absolute := sess.CreatedAt.Add(sm.maxAge); absolute.Before(sess.ExpiresAt) {
+		sess.ExpiresAt = absolute
+	}
 
 	if sess.ImpersonatorUserID == nil && now.Sub(sess.LastSeenAt) > sm.touchThreshold {
 		newExpiry := now.Add(sm.idleTimeout)
