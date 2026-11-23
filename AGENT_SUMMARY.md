@@ -1,5 +1,15 @@
 # csar-authn Agent Summary
 
+Audit producers explicitly use Core's trusted-context enrichment before enqueue
+or async emission. Successful own-session/JWT authentication replaces any incoming
+gateway caller/origin context; cookie sessions identify their human owner/effective
+subject without exposing cookie IDs, while old JWTs keep absent metadata. Account
+merge resolution updates only the effective subject of an already verified claim.
+Transactional caller registration/binding and key/service-account mutations retain
+caller/operation/trace alongside legacy Actor. This does not activate outbox,
+registry routes, delegation or production migrations. Runtime uses Alpine3.24.4
+with upgraded CA/zlib; existing signing material and cookie/OAuth contracts remain.
+
 Origin attribution issuance is opt-in via ORIGIN_ROUTER_CA_FILE. Startup requires
 verified mTLS with the dedicated router CA and aurum-api-router-client leaf CN;
 general service trust cannot assert root callers. Existing MCP and origin issuer

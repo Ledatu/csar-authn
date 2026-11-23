@@ -51,7 +51,7 @@ func (s *Store) enqueueSA(ctx context.Context, tx pgx.Tx, action string, sa *sto
 	if actor == "" {
 		actor = "unattributed:csar-authn"
 	}
-	return s.outbox.EnqueueTx(ctx, tx, &audit.Event{Actor: actor, Action: action, TargetType: "service_account", TargetID: sa.Name, ScopeType: "platform", AfterState: state, RequestID: id.RequestID})
+	return s.enqueueAudit(ctx, tx, &audit.Event{Actor: actor, Action: action, TargetType: "service_account", TargetID: sa.Name, ScopeType: "platform", AfterState: state, RequestID: id.RequestID})
 }
 
 func (s *Store) enqueueAPIKey(ctx context.Context, tx pgx.Tx, action string, key *store.APICredential, owner string) error {
@@ -59,5 +59,13 @@ func (s *Store) enqueueAPIKey(ctx context.Context, tx pgx.Tx, action string, key
 		return nil
 	}
 	id, _ := gatewayctx.FromContext(ctx)
-	return s.outbox.EnqueueTx(ctx, tx, &audit.Event{Actor: owner, Action: action, TargetType: "api_key", TargetID: key.ID.String(), ScopeType: "tenant", ScopeID: "wildberries:" + key.SellerID, RequestID: id.RequestID})
+	return s.enqueueAudit(ctx, tx, &audit.Event{Actor: owner, Action: action, TargetType: "api_key", TargetID: key.ID.String(), ScopeType: "tenant", ScopeID: "wildberries:" + key.SellerID, RequestID: id.RequestID})
+}
+
+func (s *Store) enqueueAudit(ctx context.Context, tx pgx.Tx, event *audit.Event) error {
+	enriched, err := audit.WithRequestContext(ctx, event)
+	if err != nil {
+		return err
+	}
+	return s.outbox.EnqueueTx(ctx, tx, enriched)
 }

@@ -6,6 +6,8 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ledatu/csar-core/caller"
+	"github.com/ledatu/csar-core/gatewayctx"
 	"github.com/ledatu/csar-core/httpx"
 
 	"github.com/ledatu/csar-authn/internal/store"
@@ -43,6 +45,13 @@ func (h *Handler) resolveAuth(r *http.Request) (*store.Session, *store.User, boo
 				if user, err := h.store.GetUserByID(r.Context(), userID); err == nil {
 					user = h.followMerge(r, user)
 					if user != nil {
+						identity := claims.Caller
+						if identity != nil {
+							copyIdentity := *identity
+							copyIdentity.EffectiveSubject = user.ID.String()
+							identity = &copyIdentity
+						}
+						setAuthenticatedContext(r, user, identity)
 						return nil, user, true
 					}
 				}
@@ -68,10 +77,20 @@ func (h *Handler) resolveAuth(r *http.Request) (*store.Session, *store.User, boo
 		}
 		user = h.followMerge(r, user)
 		if user != nil {
+			setAuthenticatedContext(r, user, sessionIdentity(sess, user))
 			return sess, user, true
 		}
 	}
 	return nil, nil, false
+}
+
+// Authn authenticates its own public ingress. Replace, rather than merge, any
+// gateway assertions so client-provided caller/origin data cannot enter audit.
+// Request IDs are correlation only; authentication comes from the session/JWT.
+func setAuthenticatedContext(r *http.Request, user *store.User, identity *caller.Identity) {
+	id, _ := gatewayctx.FromContext(r.Context())
+	verified := gatewayctx.Identity{Subject: user.ID.String(), Caller: identity, RequestID: id.RequestID}
+	*r = *r.WithContext(gatewayctx.NewContext(r.Context(), &verified))
 }
 
 // followMerge walks the merged_into chain until it reaches the canonical

@@ -106,6 +106,6 @@ func (s *Store) enqueueCaller(ctx context.Context, tx pgx.Tx, action string, c *
 	if actor == "" {
 		actor = c.OwnerID.String()
 	}
-	return s.outbox.EnqueueTx(ctx, tx, &audit.Event{Actor: actor, Action: action, TargetType: "caller", TargetID: c.ID.String(),
+	return s.enqueueAudit(ctx, tx, &audit.Event{Actor: actor, Action: action, TargetType: "caller", TargetID: c.ID.String(),
 		ScopeType: "subject", ScopeID: c.OwnerID.String(), AfterState: state, RequestID: id.RequestID})
 }

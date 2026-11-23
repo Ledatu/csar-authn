@@ -10,11 +10,12 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/ledatu/csar-core v0.1.48-0.20261122223628-bd29c3d6c383
+	github.com/ledatu/csar-core v0.1.48-0.20261123190813-2f811384dbbd
 	github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b
 	github.com/markbates/goth v1.80.0
 	github.com/redis/go-redis/v9 v9.19.0
 	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.25.0
 	google.golang.org/grpc v1.83.2
@@ -66,7 +67,6 @@ require (
 	go.opentelemetry.io/otel/log v1.47.0 // indirect
 	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.opentelemetry.io/otel/sdk v1.47.0 // indirect
-	go.opentelemetry.io/otel/trace v1.47.0 // indirect
 	go.opentelemetry.io/proto/otlp v1.11.0 // indirect
 	go.uber.org/atomic v1.11.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
