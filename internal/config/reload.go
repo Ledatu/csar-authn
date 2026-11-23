@@ -9,6 +9,12 @@ import (
 // Call it before applying any part of a new configuration. The startup config
 // remains the comparison baseline even after successful partial reloads.
 func ValidateReload(startup, next *Config) error {
+	if next.AuditOutboxEnabled != startup.AuditOutboxEnabled {
+		return errors.New("audit_outbox_enabled requires a restart")
+	}
+	if next.OriginRouterCAFile != startup.OriginRouterCAFile {
+		return errors.New("origin_router_ca_file requires a restart")
+	}
 	if next.LegacyUsersSync.LockDatabaseDSN != startup.LegacyUsersSync.LockDatabaseDSN {
 		return errors.New("legacy_users_sync.lock_database_dsn requires a restart")
 	}

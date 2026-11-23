@@ -463,7 +463,11 @@ func run(
 		return err
 	}
 
-	if err := h.RegisterOriginContext(mux, os.Getenv("ORIGIN_ROUTER_CA_FILE"), srv.TLSConfig()); err != nil {
+	originCAFile := os.Getenv("ORIGIN_ROUTER_CA_FILE")
+	if originCAFile == "" {
+		originCAFile = cfg.OriginRouterCAFile
+	}
+	if err := h.RegisterOriginContext(mux, originCAFile, srv.TLSConfig()); err != nil {
 		return err
 	}
 	runErr := srv.Run(ctx)

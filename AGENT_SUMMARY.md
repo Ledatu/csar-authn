@@ -1,5 +1,11 @@
 # csar-authn Agent Summary
 
+The manifest can explicitly set `origin_router_ca_file` to the existing dedicated
+router CA. The existing ORIGIN_ROUTER_CA_FILE override keeps precedence; absent
+settings remain disabled. Registration retains exact dedicated CA/CN verification
+and may reuse the already mounted MCP public CA. Both issuer trust and audit
+outbox are restart-only: config reload rejects changes before applying any fields.
+
 Audit producers explicitly use Core's trusted-context enrichment before enqueue
 or async emission. Successful own-session/JWT authentication replaces any incoming
 gateway caller/origin context; cookie sessions identify their human owner/effective

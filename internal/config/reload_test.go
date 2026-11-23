@@ -21,6 +21,30 @@ func postboxReloadConfig() *Config {
 	}}
 }
 
+func TestValidateReloadFreezesAuditAndOriginStartupModes(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		base, next Config
+	}{
+		{"audit enable", Config{}, Config{AuditOutboxEnabled: true}},
+		{"audit disable", Config{AuditOutboxEnabled: true}, Config{}},
+		{"origin enable", Config{}, Config{OriginRouterCAFile: "/private-origin-ca.pem"}},
+		{"origin disable", Config{OriginRouterCAFile: "/private-origin-ca.pem"}, Config{}},
+		{"origin replace", Config{OriginRouterCAFile: "/private-origin-ca.pem"}, Config{OriginRouterCAFile: "/another-ca.pem"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateReload(&tc.base, &tc.next)
+			if err == nil || !strings.Contains(err.Error(), "requires a restart") || strings.Contains(err.Error(), "private-origin") || strings.Contains(err.Error(), "another-ca") {
+				t.Fatal("startup change accepted or path disclosed", err)
+			}
+		})
+	}
+	stable := &Config{AuditOutboxEnabled: true, OriginRouterCAFile: "/dedicated-ca.pem"}
+	if err := ValidateReload(stable, stable); err != nil {
+		t.Fatal("unchanged startup mode rejected", err)
+	}
+}
+
 func selectelReloadConfig() *Config {
 	cfg := postboxReloadConfig()
 	cfg.EmailOTP.Postbox = PostboxConfig{}
