@@ -51,8 +51,19 @@ func (h *Handler) recordAudit(r *http.Request, actor, action, targetType, target
 		ScopeType:  "platform",
 		AfterState: afterState,
 	}
-	if err := h.auditRecorder.Record(r.Context(), event); err != nil {
-		h.logger.Warn("failed to record audit event", "action", action, "error", err)
+	h.recordAuditEvent(r, event)
+}
+
+func (h *Handler) recordAuditEvent(r *http.Request, event *audit.Event) {
+	if h.auditRecorder == nil {
+		return
+	}
+	enriched, err := audit.WithRequestContext(r.Context(), event)
+	if err == nil {
+		err = h.auditRecorder.Record(r.Context(), enriched)
+	}
+	if err != nil {
+		h.logger.Warn("failed to record audit event", "action", event.Action, "error", err)
 	}
 }
 

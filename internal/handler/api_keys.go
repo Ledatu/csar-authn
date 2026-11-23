@@ -320,10 +320,8 @@ func (h *Handler) recordAPIKeyAudit(r *http.Request, actor, action string, key *
 	if h.auditRecorder == nil || h.transactionalAudit(action) {
 		return
 	}
-	if err := h.auditRecorder.Record(r.Context(), &audit.Event{
+	h.recordAuditEvent(r, &audit.Event{
 		Actor: actor, Action: action, TargetType: "api_key", TargetID: key.ID.String(),
 		ScopeType: "tenant", ScopeID: "wildberries:" + key.SellerID,
-	}); err != nil {
-		h.logger.Warn("API key audit failed", "action", action, "error", err)
-	}
+	})
 }

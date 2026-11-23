@@ -59,6 +59,6 @@ func (s *Store) bindCallerTx(ctx context.Context, tx pgx.Tx, owner, id uuid.UUID
 	if actor == "" {
 		actor = owner.String()
 	}
-	return s.outbox.EnqueueTx(ctx, tx, &audit.Event{Actor: actor, Action: "credentials.caller.bind", TargetType: "credential", TargetID: reference,
+	return s.enqueueAudit(ctx, tx, &audit.Event{Actor: actor, Action: "credentials.caller.bind", TargetType: "credential", TargetID: reference,
 		ScopeType: "subject", ScopeID: owner.String(), AfterState: state, RequestID: identity.RequestID})
 }
