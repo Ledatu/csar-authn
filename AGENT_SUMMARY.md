@@ -240,3 +240,12 @@ atomically consumes the same exact binding. No storage migration is required.
 
 The platform-admin beta check remains in gateway policy; registration alone
 confers no data access. Existing grants retain their client IDs and deadlines.
+## Dynamic MCP storage preparation
+
+Migration028 adds bounded immutable public-client registrations and browser-bound
+client-name/refresh-policy snapshots. Registration deduplicates canonical metadata
+under a replica-wide transaction cap; unapproved leases expire after24h, pending
+authorization protects them, and approved clients are retained. Consent persists
+the callback and policy selected when authorization began. Existing requests
+default to refresh-capable; old replicas remain compatible with additive columns.
+This storage slice registers no public endpoint and enables no onboarding mode.

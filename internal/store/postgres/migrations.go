@@ -461,6 +461,18 @@ CREATE TABLE registered_caller_credentials (
 );
 CREATE INDEX registered_caller_credentials_caller ON registered_caller_credentials(caller_id);
 `},
+	{Name: "028_mcp_dynamic_clients", Up: `
+CREATE TABLE seller_mcp_clients (
+ client_id text PRIMARY KEY, fingerprint text NOT NULL UNIQUE,
+ metadata jsonb NOT NULL CHECK(octet_length(metadata::text)<=65536),
+ created_at timestamptz NOT NULL DEFAULT now(), approved_at timestamptz,
+ expires_at timestamptz NOT NULL DEFAULT now()+interval '24 hours'
+);
+CREATE INDEX seller_mcp_clients_unapproved ON seller_mcp_clients(expires_at) WHERE approved_at IS NULL;
+ALTER TABLE seller_mcp_requests ADD COLUMN client_name text NOT NULL DEFAULT '',
+ ADD COLUMN refresh_allowed boolean NOT NULL DEFAULT true;
+ALTER TABLE seller_mcp_grants ADD COLUMN client_name text NOT NULL DEFAULT '';
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.

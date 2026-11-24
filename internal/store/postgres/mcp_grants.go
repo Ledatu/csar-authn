@@ -21,7 +21,7 @@ func (s *Store) BeginMCP(ctx context.Context, r store.MCPRequest) error {
 		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id IN (SELECT id FROM seller_mcp_grants WHERE expires_at<=now() OR (code_hash IS NOT NULL AND code_expires_at<=now()) LIMIT 100)`); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `INSERT INTO seller_mcp_requests(id,browser_hash,client_id,redirect_uri,challenge,state,expires_at) VALUES ($1,$2,$3,$4,$5,$6,now()+interval '5 minutes')`, r.ID, r.BrowserHash, r.ClientID, r.RedirectURI, r.Challenge, r.State)
+		_, err := tx.Exec(ctx, `INSERT INTO seller_mcp_requests(id,browser_hash,client_id,redirect_uri,challenge,state,expires_at,client_name,refresh_allowed) VALUES ($1,$2,$3,$4,$5,$6,now()+interval '5 minutes',$7,coalesce($8,true))`, r.ID, r.BrowserHash, r.ClientID, r.RedirectURI, r.Challenge, r.State, r.ClientName, r.RefreshAllowed)
 		return err
 	})
 }
@@ -43,12 +43,17 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 	var r store.MCPDecision
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
 		var challenge string
-		err := tx.QueryRow(ctx, `DELETE FROM seller_mcp_requests WHERE id=$1 AND browser_hash=$2 AND client_id=$3 AND redirect_uri=$4 AND expires_at>now() RETURNING redirect_uri,challenge,state`, request.ID, request.BrowserHash, request.ClientID, request.RedirectURI).Scan(&r.RedirectURI, &challenge, &r.State)
+		var clientName string
+		var refreshAllowed bool
+		err := tx.QueryRow(ctx, `DELETE FROM seller_mcp_requests WHERE id=$1 AND browser_hash=$2 AND client_id=$3 AND redirect_uri=$4 AND expires_at>now() RETURNING redirect_uri,challenge,state,client_name,refresh_allowed`, request.ID, request.BrowserHash, request.ClientID, request.RedirectURI).Scan(&r.RedirectURI, &challenge, &r.State, &clientName, &refreshAllowed)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return store.ErrNotFound
 		}
 		if err != nil || codeHash == "" {
 			return err
+		}
+		if request.SessionDays > 0 && !refreshAllowed {
+			return store.ErrNotFound
 		}
 		var singleton *string
 		selected := selection.SellerIDs
@@ -56,8 +61,14 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 			singleton = &selected[0]
 			selected = nil
 		}
-		err = tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids,access_expires_at)
-  VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 minute',CASE WHEN $9::int>0 THEN now()+make_interval(days=>$9) ELSE now()+interval '1 minute' END,$7,coalesce($8::text[],'{}'),CASE WHEN $9>0 THEN now() END) RETURNING id`, owner, singleton, request.ClientID, r.RedirectURI, challenge, codeHash, selection.AllCampaigns, selected, request.SessionDays).Scan(&r.GrantID)
+		err = tx.QueryRow(ctx, `INSERT INTO seller_mcp_grants(owner_id,seller_id,client_id,redirect_uri,challenge,code_hash,code_expires_at,expires_at,all_campaigns,selected_ids,access_expires_at,client_name)
+  VALUES($1,$2,$3,$4,$5,$6,now()+interval '1 minute',CASE WHEN $9::int>0 THEN now()+make_interval(days=>$9) ELSE now()+interval '1 minute' END,$7,coalesce($8::text[],'{}'),CASE WHEN $9>0 THEN now() END,$10) RETURNING id`, owner, singleton, request.ClientID, r.RedirectURI, challenge, codeHash, selection.AllCampaigns, selected, request.SessionDays, clientName).Scan(&r.GrantID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE seller_mcp_clients SET approved_at=coalesce(approved_at,now()) WHERE client_id=$1`, request.ClientID); err != nil {
+			return err
+		}
 		if err != nil || request.CallerID == nil {
 			return err
 		}
