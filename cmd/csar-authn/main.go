@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -24,6 +25,7 @@ import (
 	"github.com/ledatu/csar-core/health"
 	"github.com/ledatu/csar-core/httpmiddleware"
 	"github.com/ledatu/csar-core/httpserver"
+	"github.com/ledatu/csar-core/httpx/clientx"
 	"github.com/ledatu/csar-core/logutil"
 	"github.com/ledatu/csar-core/observe"
 	"github.com/ledatu/csar-core/tlsx"
@@ -458,8 +460,36 @@ func run(
 	if err != nil {
 		return err
 	}
-	if err := h.RegisterSellerMCP(mux, os.Getenv("MCP_OAUTH_CLIENT_ID"), os.Getenv("MCP_OAUTH_REDIRECT_URI"),
-		os.Getenv("MCP_ROUTER_CA_FILE"), srv.TLSConfig(), additionalMCPClients...); err != nil {
+	if id, redirect := os.Getenv("MCP_OAUTH_CLIENT_ID"), os.Getenv("MCP_OAUTH_REDIRECT_URI"); id != "" || redirect != "" {
+		additionalMCPClients = append(additionalMCPClients, handler.SellerMCPClient{ClientID: id, RedirectURIs: []string{redirect}})
+	}
+	dynamicMCP, err := optionalBoolEnv("MCP_OAUTH_DYNAMIC_CLIENTS", false)
+	if err != nil {
+		return err
+	}
+	mcpEnabled, err := optionalBoolEnv("MCP_OAUTH_ENABLED", dynamicMCP || len(additionalMCPClients) > 0)
+	if err != nil {
+		return err
+	}
+	var mcpRedis *redis.Client
+	var metadataClient *http.Client
+	if dynamicMCP {
+		if cfg.Redis == nil || cfg.Redis.Address == "" {
+			return fmt.Errorf("dynamic MCP onboarding requires Redis")
+		}
+		mcpRedis = redis.NewClient(&redis.Options{Addr: cfg.Redis.Address, Password: cfg.Redis.Password, DB: cfg.Redis.DB,
+			MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 8, PoolTimeout: 200 * time.Millisecond,
+			DialTimeout: time.Second, ReadTimeout: 200 * time.Millisecond, WriteTimeout: 200 * time.Millisecond})
+		defer func() { _ = mcpRedis.Close() }()
+		if err := mcpRedis.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("MCP onboarding Redis unavailable")
+		}
+		metadataClient = clientx.NewPublicHTTPClient(3 * time.Second)
+		defer metadataClient.CloseIdleConnections()
+	}
+	if err := h.RegisterSellerMCPWithOptions(mux, handler.SellerMCPOAuthOptions{Enabled: mcpEnabled, Dynamic: dynamicMCP,
+		Clients: additionalMCPClients, RouterCAFile: os.Getenv("MCP_ROUTER_CA_FILE"), Listener: srv.TLSConfig(),
+		Redis: mcpRedis, HTTPClient: metadataClient}); err != nil {
 		return err
 	}
 
@@ -479,6 +509,18 @@ func run(
 		}
 	}
 	return runErr
+}
+
+func optionalBoolEnv(name string, fallback bool) (bool, error) {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("invalid %s boolean", name)
+	}
+	return parsed, nil
 }
 
 func initSTS(

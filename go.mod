@@ -10,7 +10,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/sessions v1.4.0
 	github.com/jackc/pgx/v5 v5.10.0
-	github.com/ledatu/csar-core v0.1.48-0.20261123202822-1c1da5d92451
+	github.com/ledatu/csar-core v0.1.48-0.20261124100717-34bbe3cf7777
 	github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b
 	github.com/markbates/goth v1.80.0
 	github.com/redis/go-redis/v9 v9.19.0
@@ -22,7 +22,15 @@ require (
 )
 
 require (
+	github.com/go-redsync/redsync/v4 v4.16.0 // indirect
+	github.com/hashicorp/errwrap v1.1.0 // indirect
+	github.com/hashicorp/go-multierror v1.1.1 // indirect
+	github.com/yuin/gopher-lua v1.1.1 // indirect
+)
+
+require (
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
+	github.com/alicebob/miniredis/v2 v2.37.0
 	github.com/aws/aws-sdk-go-v2 v1.41.7 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.10 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.11 // indirect

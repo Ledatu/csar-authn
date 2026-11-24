@@ -51,7 +51,7 @@ func newSellerMCPRegistry(clientID, redirect string, extra []SellerMCPClient) (s
 	}
 	registry := make(sellerMCPRegistry, len(clients))
 	for _, client := range clients {
-		if !sellerMCPClientID.MatchString(client.ClientID) || len(client.RedirectURIs) == 0 || len(client.RedirectURIs) > 8 {
+		if !sellerMCPClientID.MatchString(client.ClientID) || strings.HasPrefix(client.ClientID, "dcr_") || len(client.RedirectURIs) == 0 || len(client.RedirectURIs) > 8 {
 			return nil, errors.New("invalid seller MCP client registration")
 		}
 		if _, exists := registry[client.ClientID]; exists {
@@ -100,6 +100,7 @@ func (clients sellerMCPRegistry) allows(clientID, redirect string) bool {
 		// RFC8252 permits the port to vary; host and escaped path remain bound.
 		if loopbackIP(base) && base.Port() == "" && loopbackIP(u) &&
 			u.Hostname() == base.Hostname() && u.EscapedPath() == base.EscapedPath() &&
+			u.RawQuery == base.RawQuery && u.ForceQuery == base.ForceQuery &&
 			err == nil && port > 0 && port <= 65535 {
 			return true
 		}

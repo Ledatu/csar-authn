@@ -68,7 +68,13 @@ human/service principals retain their existing issuer stores. No production DDL.
 
 ## Hosted seller OAuth
 
-The optional seller MCP issuer uses authorization codes with PKCE S256, browser-bound consent and one-hour campaign grants in PostgreSQL. The primary MCP_OAUTH_CLIENT_ID/MCP_OAUTH_REDIRECT_URI pair and optional MCP_OAUTH_CLIENTS JSON define startup-only public registrations. An empty registry disables these endpoints. Delegation requires a verified seller-router certificate rooted in the separately mounted public CA (`MCP_ROUTER_CA_FILE`). Seller credential management requires an owner session. Revocation removes the grant and outstanding delegations in the same database transaction.
+The optional seller MCP issuer uses authorization codes with PKCE S256 and
+browser-bound consent. `MCP_OAUTH_ENABLED` controls issuer startup independently
+of static registrations; omission preserves legacy enablement. Explicitly opting
+into `MCP_OAUTH_DYNAMIC_CLIENTS=true` enables CIMD discovery and bounded DCR,
+requiring PostgreSQL client storage, Redis and public-only HTTPS transport.
+Delegation retains the dedicated router CA and exact peer identity. Credential
+management requires the owner's direct session; revocation closes grant/proofs.
 
 
 ## Role In Prod
@@ -230,13 +236,16 @@ the migrated issuer on all replicas before enabling the updated consent UI.
 MCP_OAUTH_CLIENTS is a bounded JSON array of client_id, redirect_uris and optional
 allow_loopback_port. It adds explicit registrations beside the primary pair;
 duplicate IDs, unknown fields, wildcard/invalid callbacks and invalid loopback
-policies fail startup. No dynamic registration endpoint or client secret exists.
+policies fail startup. This is a legacy compatibility path; no client secret exists.
 VS Code may vary only the numeric port of a registered HTTP loopback-IP callback;
 HTTPS, DNS localhost, host and escaped path remain exact. Every code/refresh
 remains bound to the actual client; authorization stores the exact requested
 callback and token redemption must present that identical value. Consent first
-looks up the callback by browser+request+client, checks the live registry, then
-atomically consumes the same exact binding. No storage migration is required.
+looks up the callback by browser+request+client, then atomically consumes the same
+exact binding. Dynamic consent uses the validated snapshot rather than re-fetching
+mutable metadata. Refresh/code exchange use the original stored grant binding
+and survive removal of the static catalogue. Unexpected client authentication
+is rejected; all supported clients currently use the public `none` method.
 
 The platform-admin beta check remains in gateway policy; registration alone
 confers no data access. Existing grants retain their client IDs and deadlines.
@@ -248,4 +257,15 @@ under a replica-wide transaction cap; unapproved leases expire after24h, pending
 authorization protects them, and approved clients are retained. Consent persists
 the callback and policy selected when authorization began. Existing requests
 default to refresh-capable; old replicas remain compatible with additive columns.
-This storage slice registers no public endpoint and enables no onboarding mode.
+Dynamic mode publishes `/oauth/mcp/register` and browser-bound request details.
+Metadata uses safe Core HTTP retrieval, a64KiB cap,3s timeout, eight local fetch
+slots, Redis coalescing/cache and shared anonymous quotas. HTTP cache directives,
+Age and Date determine freshness up to10min; failed/malformed documents are not
+cached. Redis uncertainty denies new metadata work instead of amplifying fetches.
+Names remain self-declared. Only explicitly offered public authentication and
+intersecting code/refresh grants are selected; key-only clients are rejected.
+HTTP loopback IP ports may vary; native-declared localhost ports may also vary.
+The exact callback path/query remains bound, including at code redemption.
+Existing grants retain their consent-time policy and fixed deadline; remote
+metadata failure blocks new authorization without redefining an issued grant.
+The feature remains opt-in; no deployment or production flags change here.

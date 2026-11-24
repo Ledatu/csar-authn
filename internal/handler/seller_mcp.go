@@ -12,12 +12,16 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/httpx"
+	"github.com/ledatu/csar-core/lock"
+	"github.com/ledatu/csar-core/usagebudget"
+	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 )
 
@@ -35,6 +39,20 @@ type sellerOAuth struct {
 	grants   store.MCPGrantStore
 	clients  sellerMCPRegistry
 	routerCA *x509.Certificate
+	dynamic  *mcpDynamicClients
+}
+
+// SellerMCPOAuthOptions makes issuer enablement independent of a vendor list.
+// Dynamic onboarding is opt-in and requires a bounded Redis client. The caller
+// owns Redis/HTTP shutdown; the production HTTP client must enforce public HTTPS.
+type SellerMCPOAuthOptions struct {
+	Enabled      bool
+	Dynamic      bool
+	Clients      []SellerMCPClient
+	RouterCAFile string
+	Listener     *tls.Config
+	Redis        *redis.Client
+	HTTPClient   *http.Client
 }
 
 func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, routerCAFile string, listener *tls.Config, extra ...SellerMCPClient) error {
@@ -42,18 +60,46 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 	if err != nil {
 		return err
 	}
-	if len(clients) == 0 {
+	return h.registerSellerMCP(mux, clients, SellerMCPOAuthOptions{Enabled: len(clients) > 0, RouterCAFile: routerCAFile, Listener: listener})
+}
+
+func (h *Handler) RegisterSellerMCPWithOptions(mux *http.ServeMux, opts SellerMCPOAuthOptions) error {
+	clients, err := newSellerMCPRegistry("", "", opts.Clients)
+	if err != nil {
+		return err
+	}
+	return h.registerSellerMCP(mux, clients, opts)
+}
+
+func (h *Handler) registerSellerMCP(mux *http.ServeMux, clients sellerMCPRegistry, opts SellerMCPOAuthOptions) error {
+	if !opts.Enabled {
+		if opts.Dynamic {
+			return errors.New("dynamic MCP onboarding requires the issuer to be enabled")
+		}
 		return nil
 	}
 	grants, ok := h.store.(store.MCPGrantStore)
 	if !ok {
 		return errors.New("seller MCP requires a grant store")
 	}
-	ca, err := h.registerRouterCA(routerCAFile, listener)
+	ca, err := h.registerRouterCA(opts.RouterCAFile, opts.Listener)
 	if err != nil {
 		return err
 	}
 	o := &sellerOAuth{Handler: h, grants: grants, clients: clients, routerCA: ca}
+	if opts.Dynamic {
+		clientStore, ok := h.store.(store.MCPClientStore)
+		if !ok || opts.Redis == nil || opts.HTTPClient == nil {
+			return errors.New("dynamic MCP onboarding requires client storage, Redis and public HTTPS transport")
+		}
+		limiter, err := usagebudget.New(opts.Redis, "authn:mcp:", 200*time.Millisecond)
+		if err != nil {
+			return err
+		}
+		o.dynamic = &mcpDynamicClients{store: clientStore, cache: opts.Redis, http: opts.HTTPClient,
+			limiter: limiter, locker: lock.NewRedisLocker(opts.Redis), slots: make(chan struct{}, 8)}
+		mux.HandleFunc("POST /oauth/mcp/register", o.registerClient)
+	}
 	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
 	mux.HandleFunc("POST /svc/authn/mcp/eligible", o.eligible)
@@ -61,6 +107,7 @@ func (h *Handler) RegisterSellerMCP(mux *http.ServeMux, clientID, redirect, rout
 	mux.HandleFunc("GET /oauth/mcp/authorize", o.authorize)
 	mux.HandleFunc("POST /oauth/mcp/token", o.token)
 	mux.HandleFunc("POST /oauth/mcp/consent", o.consent)
+	mux.HandleFunc("GET /oauth/mcp/requests/{id}", o.requestInfo)
 	mux.HandleFunc("GET /oauth/mcp/connections", o.connections)
 	mux.HandleFunc("DELETE /oauth/mcp/connections/{id}", o.revoke)
 	mux.HandleFunc("POST /internal/seller-mcp/delegate-account", o.introspect)
@@ -76,8 +123,17 @@ func validMCPResource(resource string) bool {
 
 func validMCPRedirect(raw string) bool {
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.RawQuery != "" || u.ForceQuery || u.Opaque != "" || strings.ContainsAny(raw, "*#") || strings.HasSuffix(u.Host, ":") {
+	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(raw, "*#") || strings.HasSuffix(u.Host, ":") {
 		return false
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil || !uniqueParams(query) {
+		return false
+	}
+	for _, reserved := range []string{"code", "state", "iss", "error", "error_description", "error_uri"} {
+		if query.Has(reserved) {
+			return false
+		}
 	}
 	if u.Port() != "" {
 		port, err := strconv.Atoi(u.Port())
@@ -90,7 +146,7 @@ func validMCPRedirect(raw string) bool {
 }
 
 func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
-	httpx.WriteJSON(w, http.StatusOK, map[string]any{
+	metadata := map[string]any{
 		"issuer":                                         mcpIssuer,
 		"authorization_endpoint":                         oauthAPI + "/authorize",
 		"token_endpoint":                                 oauthAPI + "/token",
@@ -100,7 +156,12 @@ func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
 		"scopes_supported":                               []string{store.APIKeyScopeAnalyticsRead},
 		"token_endpoint_auth_methods_supported":          []string{"none"},
 		"authorization_response_iss_parameter_supported": true,
-	})
+	}
+	if o.dynamic != nil {
+		metadata["client_id_metadata_document_supported"] = true
+		metadata["registration_endpoint"] = oauthAPI + "/register"
+	}
+	httpx.WriteJSON(w, http.StatusOK, metadata)
 }
 func oauthError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Cache-Control", "no-store")
@@ -122,14 +183,37 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 	challenge, decodeErr := base64.RawURLEncoding.Strict().DecodeString(q.Get("code_challenge"))
 	clientID, redirect := q.Get("client_id"), q.Get("redirect_uri")
 	if err != nil || len(r.URL.RawQuery) > 4096 || !uniqueParams(q) ||
-		q.Get("response_type") != "code" || !o.clients.allows(clientID, redirect) ||
+		q.Get("response_type") != "code" || !caller.ValidClientID(clientID) || clientID == "" ||
 		q.Get("scope") != store.APIKeyScopeAnalyticsRead || !validMCPResource(q.Get("resource")) ||
 		q.Get("code_challenge_method") != "S256" || decodeErr != nil || len(challenge) != 32 || len(q.Get("state")) > 512 {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
+	name, refreshAllowed := clientID, true
+	if o.dynamic != nil {
+		if err := o.dynamic.admit(r.Context(), "mcp.authorization", requestPeer(r), 600, time.Minute); err != nil {
+			o.clientError(w, err)
+			return
+		}
+	}
+	if !o.clients.allows(clientID, redirect) {
+		if o.dynamic == nil {
+			oauthError(w, 400, "invalid_request")
+			return
+		}
+		client, err := o.dynamic.resolve(r.Context(), clientID)
+		if err != nil {
+			o.clientError(w, err)
+			return
+		}
+		if !dynamicMCPRedirectAllowed(client, redirect) {
+			oauthError(w, 400, "invalid_request")
+			return
+		}
+		name, refreshAllowed = client.ClientName, slices.Contains(client.GrantTypes, "refresh_token")
+	}
 	id, browser := randomToken(), randomToken()
-	err = o.grants.BeginMCP(r.Context(), store.MCPRequest{ID: id, BrowserHash: hashValue(browser), ClientID: clientID, RedirectURI: redirect, State: q.Get("state"), Challenge: q.Get("code_challenge")})
+	err = o.grants.BeginMCP(r.Context(), store.MCPRequest{ID: id, BrowserHash: hashValue(browser), ClientID: clientID, ClientName: name, RefreshAllowed: &refreshAllowed, RedirectURI: redirect, State: q.Get("state"), Challenge: q.Get("code_challenge")})
 	if err != nil {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
@@ -165,7 +249,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	if _, known := o.clients[in.Client]; !known {
+	if in.Client == "" || !caller.ValidClientID(in.Client) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -197,7 +281,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	}
 	binding := store.MCPRequest{CallerID: in.CallerID, SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: in.Client}
 	binding.RedirectURI, err = o.grants.MCPRequestRedirect(r.Context(), binding)
-	if errors.Is(err, store.ErrNotFound) || err == nil && !o.clients.allows(in.Client, binding.RedirectURI) {
+	if errors.Is(err, store.ErrNotFound) || err == nil && (!validMCPRedirect(binding.RedirectURI) || o.dynamic == nil && !o.clients.allows(in.Client, binding.RedirectURI)) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -224,7 +308,17 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		params.Set("error", "access_denied")
 	}
 	http.SetCookie(w, &http.Cookie{Name: consentCookie, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
-	response := map[string]string{"redirect": tx.RedirectURI + "?" + params.Encode()}
+	callback, err := url.Parse(tx.RedirectURI)
+	if err != nil {
+		oauthError(w, 503, "temporarily_unavailable")
+		return
+	}
+	if callback.RawQuery != "" {
+		callback.RawQuery += "&"
+	}
+	callback.RawQuery += params.Encode()
+	callback.ForceQuery = false
+	response := map[string]string{"redirect": callback.String()}
 	if tx.GrantID != uuid.Nil {
 		response["grant_id"] = tx.GrantID.String()
 	}
@@ -245,13 +339,15 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 	var lifetime store.MCPTokenLifetime
 	var err error
 	clientID := q.Get("client_id")
-	if _, known := o.clients[clientID]; !known {
-		oauthError(w, 400, "invalid_grant")
+	if clientID == "" || !caller.ValidClientID(clientID) || r.Header.Get("Authorization") != "" || q.Has("client_secret") || q.Has("client_assertion") || q.Has("client_assertion_type") {
+		oauthError(w, 400, "invalid_client")
 		return
 	}
 	switch q.Get("grant_type") {
 	case "authorization_code":
-		if !o.clients.allows(clientID, q.Get("redirect_uri")) || !validMCPResource(q.Get("resource")) ||
+		// The one-use stored code, not a mutable registry/cache, binds this exact
+		// client and callback. Refresh similarly binds the persisted client/grant.
+		if !validMCPRedirect(q.Get("redirect_uri")) || !validMCPResource(q.Get("resource")) ||
 			!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
 			oauthError(w, 400, "invalid_grant")
 			return

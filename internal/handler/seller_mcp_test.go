@@ -32,6 +32,8 @@ type mcpFixtureStore struct {
 	store.Store
 	store.MCPGrantStore
 	store.CallerCredentialStore
+	store.MCPClientStore
+	store.MCPRequestInfoStore
 }
 
 // Uses an isolated localhost PostgreSQL fixture. Login and the Authz decision use
@@ -51,6 +53,18 @@ func TestSellerMCPGrantLifecycle(t *testing.T) {
 
 func TestRegisteredSellerMCPGrantLifecycle(t *testing.T) {
 	testSellerMCPGrantLifecycle(t, "codex", "http://127.0.0.1:48973/oauth/callback", true)
+}
+
+func TestDynamicallyRegisteredSellerMCPGrantLifecycle(t *testing.T) {
+	testSellerMCPGrantLifecycle(t, "dcr_fixture", "http://127.0.0.1:4999/callback", true)
+}
+
+func TestClientDocumentSellerMCPGrantLifecycle(t *testing.T) {
+	testSellerMCPGrantLifecycle(t, "cimd_fixture", "http://127.0.0.1:4999/callback", true)
+}
+
+func TestDynamicallyRegisteredQueryCallbackMCPGrantLifecycle(t *testing.T) {
+	testSellerMCPGrantLifecycle(t, "dcr_fixture", "http://127.0.0.1:4999/callback?source=agent", true)
 }
 
 func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCaller bool) {
@@ -78,7 +92,7 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 		t.Fatal(err)
 	}
 	th, _, session := apiKeyScopeHarness(t)
-	th.handler.store = mcpFixtureStore{th.store, db, db}
+	th.handler.store = mcpFixtureStore{th.store, db, db, db, db}
 	var registered *store.Caller
 	if bindCaller {
 		if _, err := db.EnableAuditOutbox(t.Context()); err != nil {
@@ -108,8 +122,44 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 		t.Fatal(err)
 	}
 	listener := &tls.Config{MinVersion: tls.VersionTLS13, ClientCAs: x509.NewCertPool(), ClientAuth: tls.RequireAndVerifyClientCert}
-	if err = th.handler.RegisterSellerMCP(mux, "codex", "http://127.0.0.1:48973/oauth/callback", caFile, listener, testMCPClients()...); err != nil {
-		t.Fatal(err)
+	if client == "dcr_fixture" || client == "cimd_fixture" {
+		registeredRedirect := strings.Replace(redirect, ":4999", ":4000", 1)
+		metadataClient := http.DefaultClient
+		var metadataURL string
+		if client == "cimd_fixture" {
+			metadataServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(store.MCPClient{ClientID: "https://" + r.Host + "/client.json", ClientName: "Document client", RedirectURIs: []string{registeredRedirect}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"})
+			}))
+			t.Cleanup(metadataServer.Close)
+			metadataClient, metadataURL = metadataServer.Client(), metadataServer.URL+"/client.json"
+		}
+		dynamic, _ := dynamicMCPFixture(t, http.DefaultClient)
+		if err := th.handler.RegisterSellerMCPWithOptions(mux, SellerMCPOAuthOptions{Enabled: true, Dynamic: true,
+			RouterCAFile: caFile, Listener: listener, Redis: dynamic.cache, HTTPClient: metadataClient}); err != nil {
+			t.Fatal(err)
+		}
+		if metadataURL != "" {
+			client = metadataURL
+		} else {
+			metadata, err := json.Marshal(store.MCPClient{ClientName: "Custom agent host", RedirectURIs: []string{registeredRedirect}, AuthMethod: "none", GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, ApplicationType: "native"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			r := httptest.NewRequest(http.MethodPost, "/oauth/mcp/register", strings.NewReader(string(metadata)))
+			r.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			mux.ServeHTTP(w, r)
+			var registered store.MCPClient
+			if w.Code != 201 || json.Unmarshal(w.Body.Bytes(), &registered) != nil || !strings.HasPrefix(registered.ClientID, "dcr_") {
+				t.Fatalf("registration: %d %s", w.Code, w.Body)
+			}
+			client = registered.ClientID
+		}
+	} else {
+		if err = th.handler.RegisterSellerMCP(mux, "codex", "http://127.0.0.1:48973/oauth/callback", caFile, listener, testMCPClients()...); err != nil {
+			t.Fatal(err)
+		}
 	}
 	send := func(r *http.Request) *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
@@ -126,6 +176,12 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 	cookie := begin.Result().Cookies()[0]
 	if !cookie.HttpOnly || !cookie.Secure || cookie.Path != "/" {
 		t.Fatal("consent binding cookie")
+	}
+	infoRequest := httptest.NewRequest(http.MethodGet, "/oauth/mcp/requests/"+dest.Query().Get("mcp_request"), nil)
+	infoRequest.AddCookie(session)
+	infoRequest.AddCookie(cookie)
+	if response := send(infoRequest); response.Code != 200 {
+		t.Fatalf("browser-bound consent snapshot: %d", response.Code)
 	}
 	decision := "approve"
 	consentClient := client
@@ -206,6 +262,9 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 	if callback.Query().Get("state") != "client-state" || callback.Query().Get("iss") != mcpIssuer {
 		t.Fatal("incorrect callback")
 	}
+	if original, _ := url.Parse(redirect); original.Query().Get("source") != callback.Query().Get("source") {
+		t.Fatal("registered callback query was lost")
+	}
 	tokenClient, tokenRedirect := client, redirect
 	redeem := func(verifier, resource string) *httptest.ResponseRecorder {
 		v := url.Values{"grant_type": {"authorization_code"}, "code": {callback.Query().Get("code")}, "code_verifier": {verifier}, "redirect_uri": {tokenRedirect}, "client_id": {tokenClient}, "resource": {resource}}
@@ -263,7 +322,10 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 		}
 		r := httptest.NewRequest("POST", "/oauth/mcp/token", strings.NewReader(v.Encode()))
 		r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-		w := send(r)
+		// Refresh authority comes from the original grant, even after the static
+		// registration catalogue has been removed from a later issuer replica.
+		w := httptest.NewRecorder()
+		(&sellerOAuth{grants: db}).token(w, r)
 		var pair tokenPair
 		if err := json.Unmarshal(w.Body.Bytes(), &pair); err != nil {
 			t.Fatal(err)
