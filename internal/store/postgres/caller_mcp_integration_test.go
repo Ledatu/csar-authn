@@ -33,6 +33,14 @@ func TestCallerRevocationClosesOAuthRefreshAndProofs(t *testing.T) {
 	if _, err := s.RedeemMCP(ctx, "code", "codex", request.RedirectURI, "challenge", "access", "refresh"); err != nil {
 		t.Fatal(err)
 	}
+	connections, err := s.ListMCP(ctx, u.ID)
+	if err != nil || len(connections) != 1 {
+		t.Fatal("missing active connection", err)
+	}
+	listed := connections[0]
+	if listed.CallerID == nil || *listed.CallerID != c.ID || listed.CallerKind != caller.Agent || listed.CallerLabel != c.Label || len(listed.SellerIDs) != 1 || listed.SellerIDs[0] != listed.SellerID {
+		t.Fatal("connection lost caller or single-store scope")
+	}
 	if _, err := s.DelegateMCP(ctx, "access", "proof", false); err != nil {
 		t.Fatal(err)
 	}

@@ -27,23 +27,28 @@ func (s *Store) CreateCaller(ctx context.Context, c *store.Caller, maxActive int
 		return store.ErrCallerAuditRequired
 	}
 	return pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		var owner uuid.UUID
-		if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, c.OwnerID).Scan(&owner); err != nil {
-			return err
-		}
-		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM registered_callers WHERE owner_user_id=$1 AND revoked_at IS NULL`, c.OwnerID).Scan(&count); err != nil {
-			return err
-		}
-		if count >= maxActive {
-			return store.ErrCallerLimit
-		}
-		if err := tx.QueryRow(ctx, `INSERT INTO registered_callers(id,owner_user_id,caller_kind,label)
-VALUES($1,$2,$3,$4) RETURNING created_at`, c.ID, c.OwnerID, c.Kind, c.Label).Scan(&c.CreatedAt); err != nil {
-			return err
-		}
-		return s.enqueueCaller(ctx, tx, "credentials.caller.create", c)
+		return s.createCallerTx(ctx, tx, c, maxActive)
 	})
+}
+
+// The caller has already passed registration validation and outbox preflight.
+func (s *Store) createCallerTx(ctx context.Context, tx pgx.Tx, c *store.Caller, maxActive int) error {
+	var owner uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id=$1 FOR UPDATE`, c.OwnerID).Scan(&owner); err != nil {
+		return err
+	}
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT count(*) FROM registered_callers WHERE owner_user_id=$1 AND revoked_at IS NULL`, c.OwnerID).Scan(&count); err != nil {
+		return err
+	}
+	if count >= maxActive {
+		return store.ErrCallerLimit
+	}
+	if err := tx.QueryRow(ctx, `INSERT INTO registered_callers(id,owner_user_id,caller_kind,label)
+VALUES($1,$2,$3,$4) RETURNING created_at`, c.ID, c.OwnerID, c.Kind, c.Label).Scan(&c.CreatedAt); err != nil {
+		return err
+	}
+	return s.enqueueCaller(ctx, tx, "credentials.caller.create", c)
 }
 
 func (s *Store) ListActiveCallers(ctx context.Context, owner uuid.UUID) ([]store.Caller, error) {

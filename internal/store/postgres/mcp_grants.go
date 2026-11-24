@@ -69,10 +69,8 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 		if _, err := tx.Exec(ctx, `UPDATE seller_mcp_clients SET approved_at=coalesce(approved_at,now()) WHERE client_id=$1`, request.ClientID); err != nil {
 			return err
 		}
-		if err != nil || request.CallerID == nil {
-			return err
-		}
-		return s.bindCallerTx(ctx, tx, owner, *request.CallerID, caller.OAuthAccess, r.GrantID.String())
+		_, err = s.bindCredentialCallerTx(ctx, tx, owner, request.CallerID, request.NewCaller, caller.OAuthAccess, r.GrantID.String())
+		return err
 	})
 	return r, err
 }
@@ -185,16 +183,19 @@ func (s *Store) ConsumeMCP(ctx context.Context, delegatedHash string) (store.MCP
 }
 
 func (s *Store) ListMCP(ctx context.Context, owner uuid.UUID) ([]store.MCPGrant, error) {
-	rows, err := s.pool.Query(ctx, `SELECT id,owner_id,client_id,coalesce(seller_id::text,''),expires_at,all_campaigns,selected_ids FROM seller_mcp_grants
-  WHERE owner_id=$1 AND expires_at>now() AND coalesce(access_hash,session_access_hash) IS NOT NULL ORDER BY expires_at DESC`, owner)
+	rows, err := s.pool.Query(ctx, `SELECT g.id,g.owner_id,g.client_id,coalesce(g.seller_id::text,''),g.expires_at,g.all_campaigns,CASE WHEN g.seller_id IS NULL THEN g.selected_ids ELSE ARRAY[g.seller_id::text] END,g.client_name,
+ c.id,coalesce(c.caller_kind,''),coalesce(c.label,'') FROM seller_mcp_grants g
+ LEFT JOIN registered_caller_credentials b ON b.credential_kind='oauth_access' AND b.credential_id=g.id::text AND b.owner_user_id=g.owner_id
+ LEFT JOIN registered_callers c ON c.id=b.caller_id AND c.owner_user_id=g.owner_id AND c.revoked_at IS NULL
+ WHERE g.owner_id=$1 AND g.expires_at>now() AND coalesce(g.access_hash,g.session_access_hash) IS NOT NULL ORDER BY g.expires_at DESC`, owner)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	grants := []store.MCPGrant{}
 	for rows.Next() {
-		g, err := scanMCPGrant(rows, false)
-		if err != nil {
+		var g store.MCPGrant
+		if err := rows.Scan(&g.ID, &g.OwnerID, &g.ClientID, &g.SellerID, &g.ExpiresAt, &g.AllCampaigns, &g.SellerIDs, &g.ClientName, &g.CallerID, &g.CallerKind, &g.CallerLabel); err != nil {
 			return nil, err
 		}
 		grants = append(grants, g)

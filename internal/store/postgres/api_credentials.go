@@ -22,7 +22,7 @@ func (s *Store) CreateAPICredential(ctx context.Context, key *store.APICredentia
 	if err := store.ValidateAPICredentialScopes(key.Scopes); err != nil {
 		return fmt.Errorf("invalid API credential scopes: %w", err)
 	}
-	if key.CallerID != nil && s.outbox == nil {
+	if (key.CallerID != nil || key.NewCaller != nil) && s.outbox == nil {
 		return store.ErrCallerAuditRequired
 	}
 	tx, err := s.pool.Begin(ctx)
@@ -51,10 +51,9 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING created_at`,
 	).Scan(&key.CreatedAt); err != nil {
 		return fmt.Errorf("insert API credential: %w", err)
 	}
-	if key.CallerID != nil {
-		if err := s.bindCallerTx(ctx, tx, key.OwnerID, *key.CallerID, caller.APIKey, key.ID.String()); err != nil {
-			return err
-		}
+	key.CallerID, err = s.bindCredentialCallerTx(ctx, tx, key.OwnerID, key.CallerID, key.NewCaller, caller.APIKey, key.ID.String())
+	if err != nil {
+		return err
 	}
 	if err := s.enqueueAPIKey(ctx, tx, "api_key.create", key, key.OwnerID.String()); err != nil {
 		return err

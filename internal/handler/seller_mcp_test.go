@@ -93,6 +93,9 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 	}
 	th, _, session := apiKeyScopeHarness(t)
 	th.handler.store = mcpFixtureStore{th.store, db, db, db, db}
+	if _, err := db.EnableAuditOutbox(t.Context()); err != nil {
+		t.Fatal(err)
+	}
 	var registered *store.Caller
 	if bindCaller {
 		if _, err := db.EnableAuditOutbox(t.Context()); err != nil {
@@ -249,6 +252,17 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 	callback, _ := url.Parse(result.Redirect)
 	if _, err := uuid.Parse(result.GrantID); err != nil || callback.Query().Has("grant_id") {
 		t.Fatal("expected a grant reference only in the seller response")
+	}
+	if !bindCaller {
+		registered, err = db.CallerForCredential(t.Context(), testUserID, caller.OAuthAccess, result.GrantID)
+		if err != nil || registered.Kind != caller.Application {
+			t.Fatal("new OAuth approval did not create a generic application binding", err)
+		}
+		t.Cleanup(func() {
+			if _, err := db.RevokeCaller(context.Background(), testUserID, registered.ID); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 	grants, err := db.ListMCP(t.Context(), testUserID)
 	if err != nil {
@@ -577,7 +591,7 @@ func assertMCPCaller(t *testing.T, id *caller.Identity, registered *store.Caller
 		if id.CallerKind != caller.Unknown || id.CallerID != "" {
 			t.Fatal("legacy MCP transport inferred caller identity")
 		}
-	} else if id.CallerKind != caller.Agent || id.CallerID != registered.ID.String() {
+	} else if id.CallerKind != registered.Kind || id.CallerID != registered.ID.String() {
 		t.Fatal("MCP refresh/delegation changed registered caller")
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"github.com/ledatu/csar-core/httpx"
 )
 
-const maxActiveCallers = 20
+const maxActiveCallers = store.DefaultCallerLimit
 
 func (h *Handler) callerRegistry(w http.ResponseWriter, r *http.Request, mutation bool) (store.CallerRegistryStore, *store.User, bool) {
 	w.Header().Set("Cache-Control", "no-store")
