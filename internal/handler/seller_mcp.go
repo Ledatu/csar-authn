@@ -236,12 +236,12 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	cookie, err := r.Cookie(consentCookie)
 	var in struct {
 		store.MCPSelection
-		SessionDays int        `json:"session_days"`
-		Request     string     `json:"request"`
-		Seller      string     `json:"seller_id"`
-		Decision    string     `json:"decision"`
-		Client      string     `json:"client_id"`
-		CallerID    *uuid.UUID `json:"caller_id"`
+		credentialCallerInput
+		SessionDays int    `json:"session_days"`
+		Request     string `json:"request"`
+		Seller      string `json:"seller_id"`
+		Decision    string `json:"decision"`
+		Client      string `json:"client_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 16384)
 	if err != nil || len(cookie.Value) != 43 || httpx.ReadJSON(r, &in) != nil || len(in.Request) != 43 ||
@@ -280,7 +280,17 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		codeHash = hashValue(code)
 	}
 	binding := store.MCPRequest{CallerID: in.CallerID, SessionDays: in.SessionDays, ID: in.Request, BrowserHash: hashValue(cookie.Value), ClientID: in.Client}
-	binding.RedirectURI, err = o.grants.MCPRequestRedirect(r.Context(), binding)
+	requests, ok := o.grants.(store.MCPRequestInfoStore)
+	if !ok {
+		oauthError(w, 503, "temporarily_unavailable")
+		return
+	}
+	info, err := requests.MCPRequestInfo(r.Context(), binding.ID, binding.BrowserHash)
+	binding.RedirectURI = info.RedirectURI
+	if err == nil && info.ClientID != in.Client {
+		oauthError(w, 400, "invalid_request")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) || err == nil && (!validMCPRedirect(binding.RedirectURI) || o.dynamic == nil && !o.clients.allows(in.Client, binding.RedirectURI)) {
 		oauthError(w, 400, "invalid_request")
 		return
@@ -289,7 +299,18 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 503, "temporarily_unavailable")
 		return
 	}
+	if in.Decision == "approve" {
+		binding.NewCaller, err = in.newCaller(user.ID, info.ClientName)
+		if err != nil {
+			oauthError(w, 400, "invalid_request")
+			return
+		}
+	}
 	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
+	if errors.Is(err, store.ErrCallerLimit) {
+		oauthError(w, 409, "caller_limit_reached")
+		return
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		oauthError(w, 400, "invalid_request")
 		return

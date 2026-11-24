@@ -12,6 +12,8 @@ import (
 	"github.com/ledatu/csar-core/caller"
 )
 
+const DefaultCallerLimit = 20
+
 // Caller is an owner-registered agent/application, independent of its keys or
 // OAuth connections. Human and service principals retain their issuer stores.
 type Caller struct {

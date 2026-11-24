@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/ledatu/csar-core/caller"
 )
 
 // MCPRequest binds the browser transaction to a validated client and PKCE challenge.
 type MCPRequest struct {
+	NewCaller                                                *Caller
 	CallerID                                                 *uuid.UUID
 	ClientName                                               string
 	RefreshAllowed                                           *bool
@@ -41,13 +43,17 @@ func (s MCPSelection) Allows(seller string) bool {
 
 type MCPGrant struct {
 	MCPSelection
-	DiscoveryOnly bool      `json:"-"`
-	ReportSeller  string    `json:"-"`
-	ID            uuid.UUID `json:"id"`
-	OwnerID       uuid.UUID `json:"-"`
-	ClientID      string    `json:"client_id"`
-	SellerID      string    `json:"seller_id"`
-	ExpiresAt     time.Time `json:"expires_at"`
+	ClientName    string      `json:"client_name,omitempty"`
+	CallerID      *uuid.UUID  `json:"caller_id,omitempty"`
+	CallerKind    caller.Kind `json:"caller_kind,omitempty"`
+	CallerLabel   string      `json:"caller_label,omitempty"`
+	DiscoveryOnly bool        `json:"-"`
+	ReportSeller  string      `json:"-"`
+	ID            uuid.UUID   `json:"id"`
+	OwnerID       uuid.UUID   `json:"-"`
+	ClientID      string      `json:"client_id"`
+	SellerID      string      `json:"seller_id"`
+	ExpiresAt     time.Time   `json:"expires_at"`
 }
 type MCPGrantStore interface {
 	BeginMCP(context.Context, MCPRequest) error

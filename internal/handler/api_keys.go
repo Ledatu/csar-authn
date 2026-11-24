@@ -106,10 +106,10 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
+		credentialCallerInput
 		SellerID string          `json:"seller_id"`
 		Label    string          `json:"label"`
 		Scopes   json.RawMessage `json:"scopes"`
-		CallerID *uuid.UUID      `json:"caller_id"`
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, 4096)
 	decoder := json.NewDecoder(r.Body)
@@ -141,12 +141,22 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := prefix + randomToken()
 
+	newCaller, err := body.newCaller(user.ID, body.Label)
+	if err != nil {
+		httpx.WriteError(w, csarerrors.Validation("%s", err))
+		return
+	}
 	key := &store.APICredential{
-		ID: uuid.New(), OwnerID: user.ID, CallerID: body.CallerID, SellerID: body.SellerID, Label: body.Label,
+		NewCaller: newCaller,
+		ID:        uuid.New(), OwnerID: user.ID, CallerID: body.CallerID, SellerID: body.SellerID, Label: body.Label,
 		TokenHash: hashValue(raw), Prefix: raw[:len(prefix)+8], Scopes: scopes,
 		ExpiresAt: time.Now().UTC().Add(apiKeyLifetime),
 	}
 	if err := keys.CreateAPICredential(r.Context(), key, maxActiveAPIKeys); err != nil {
+		if errors.Is(err, store.ErrCallerLimit) {
+			httpx.WriteError(w, csarerrors.Conflict("active caller limit reached; reuse or revoke a caller"))
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
 			httpx.WriteError(w, csarerrors.NotFound("caller not found"))
 			return

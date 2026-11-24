@@ -1,5 +1,14 @@
 # csar-authn Agent Summary
 
+New owner-issued API keys and MCP approvals create their caller in the same
+credential/binding/audit transaction unless the owner reuses an existing caller.
+`caller_kind: agent` is an explicit owner choice; omission registers a generic
+application and never infers an agent from product names or transport. The owner
+cap is20 active callers; reuse requires the same owner and an active immutable
+registration. Failed binding/audit rolls back creation. Existing unbound tokens
+remain unknown. MCP connection lists expose the bound caller and self-declared
+client name separately, preserving legacy single-store selection semantics.
+
 The manifest can explicitly set `origin_router_ca_file` to the existing dedicated
 router CA. The existing ORIGIN_ROUTER_CA_FILE override keeps precedence; absent
 settings remain disabled. Registration retains exact dedicated CA/CN verification

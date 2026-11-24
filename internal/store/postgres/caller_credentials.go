@@ -62,3 +62,30 @@ func (s *Store) bindCallerTx(ctx context.Context, tx pgx.Tx, owner, id uuid.UUID
 	return s.enqueueAudit(ctx, tx, &audit.Event{Actor: actor, Action: "credentials.caller.bind", TargetType: "credential", TargetID: reference,
 		ScopeType: "subject", ScopeID: owner.String(), AfterState: state, RequestID: identity.RequestID})
 }
+
+// Creation and binding share the credential transaction. A failed credential or
+// audit enqueue cannot leave an orphan registration or silently become legacy.
+func (s *Store) bindCredentialCallerTx(ctx context.Context, tx pgx.Tx, owner uuid.UUID, id *uuid.UUID, newCaller *store.Caller, kind caller.CredentialKind, reference string) (*uuid.UUID, error) {
+	if newCaller != nil {
+		if id != nil || newCaller.OwnerID != owner {
+			return nil, store.ErrCallerBinding
+		}
+		if err := newCaller.ValidateRegistration(); err != nil {
+			return nil, err
+		}
+		if s.outbox == nil {
+			return nil, store.ErrCallerAuditRequired
+		}
+		if err := s.createCallerTx(ctx, tx, newCaller, store.DefaultCallerLimit); err != nil {
+			return nil, err
+		}
+		id = &newCaller.ID
+	}
+	if id == nil {
+		return nil, nil
+	} // Existing direct store callers can still seed legacy credentials.
+	if err := s.bindCallerTx(ctx, tx, owner, *id, kind, reference); err != nil {
+		return nil, err
+	}
+	return id, nil
+}
