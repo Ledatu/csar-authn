@@ -8,9 +8,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// MCPRequest binds the browser transaction to the pre-registered client and PKCE challenge.
+// MCPRequest binds the browser transaction to a validated client and PKCE challenge.
 type MCPRequest struct {
 	CallerID                                                 *uuid.UUID
+	ClientName                                               string
+	RefreshAllowed                                           *bool
 	ID, BrowserHash, ClientID, RedirectURI, Challenge, State string
 	SessionDays                                              int
 }
