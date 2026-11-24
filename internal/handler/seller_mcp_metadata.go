@@ -39,6 +39,17 @@ func validMCPMetadataURL(raw string) bool {
 }
 
 func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
+	// Explicit null capability fields must not become an implicit public-client
+	// default. Absent properties and malformed declarations are different.
+	var fields map[string]json.RawMessage
+	if len(raw) > 65536 || json.Unmarshal(raw, &fields) != nil || fields == nil {
+		return store.MCPClient{}, errMCPClientMetadata
+	}
+	for _, name := range []string{"token_endpoint_auth_method", "token_endpoint_auth_methods_supported", "grant_types", "response_types"} {
+		if value, present := fields[name]; present && strings.TrimSpace(string(value)) == "null" {
+			return store.MCPClient{}, errMCPClientMetadata
+		}
+	}
 	var metadata struct {
 		store.MCPClient
 		AuthMethods       []string        `json:"token_endpoint_auth_methods_supported"`

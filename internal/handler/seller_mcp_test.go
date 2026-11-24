@@ -495,7 +495,7 @@ func testSellerMCPGrantLifecycle(t *testing.T, client, redirect string, bindCall
 		if d := time.Until(deadline); d < 7*24*time.Hour-time.Minute || d > 7*24*time.Hour {
 			t.Fatal("unexpected session deadline")
 		}
-		for _, args := range []url.Values{{"resource": {"https://other.invalid"}}, {"client_id": {"another-client"}}, {"client_id": {otherClient}}, {"scope": {"analytics:write"}}} {
+		for _, args := range []url.Values{{"resource": {"https://other.invalid"}}, {"client_id": {"another-client"}}, {"client_id": {otherClient}}, {"scope": {"analytics:write"}}, {"client_secret": {"unexpected"}}, {"client_assertion": {"unexpected"}}} {
 			if status, _ := refresh(original.Refresh, args); status != 400 {
 				t.Fatal("refresh changed grant binding")
 			}

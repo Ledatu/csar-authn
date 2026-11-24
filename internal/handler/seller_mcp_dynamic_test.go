@@ -63,6 +63,13 @@ func TestMCPClientMetadataNegotiation(t *testing.T) {
 		func() { base["token_endpoint_auth_methods_supported"] = []string{"private_key_jwt"} },
 		func() { base["redirect_uris"] = []string{"https://*.example/callback"} },
 		func() { base["grant_types"] = []string{"client_credentials"} },
+		func() { base["grant_types"] = nil },
+		func() { base["response_types"] = nil },
+		func() { base["token_endpoint_auth_method"] = nil },
+		func() {
+			base["token_endpoint_auth_method"] = "none"
+			base["token_endpoint_auth_methods_supported"] = nil
+		},
 	} {
 		original := encode()
 		mutation()
@@ -106,6 +113,9 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 			c, err := d.resolve(t.Context(), id)
 			if err != nil || c.ClientID != id {
 				t.Errorf("resolve: %v", err)
+			}
+			if err == nil {
+				c.RedirectURIs[0] = "https://changed.example/callback"
 			}
 		})
 	}
