@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"time"
 
@@ -21,6 +22,24 @@ type MCPRequest struct {
 
 const MCPConnectionDays = 7
 const MCPAccessTTL = time.Hour
+const MCPMaxActiveConnections = 100
+
+var ErrMCPConnectionLimit = errors.New("active MCP connection limit reached")
+
+// Manual tokens have the MCP resource audience, no OAuth client or refresh
+// credential, and a fixed owner-selected deadline of at most seven days.
+type MCPManualToken struct {
+	OwnerID    uuid.UUID
+	CallerID   *uuid.UUID
+	NewCaller  *Caller
+	Selection  MCPSelection
+	AccessHash string
+	Hours      int
+}
+
+type MCPManualTokenStore interface {
+	CreateManualMCP(context.Context, MCPManualToken) (MCPGrant, error)
+}
 
 type MCPTokenLifetime struct {
 	Seconds   int
@@ -54,6 +73,7 @@ type MCPGrant struct {
 	ClientID      string      `json:"client_id"`
 	SellerID      string      `json:"seller_id"`
 	ExpiresAt     time.Time   `json:"expires_at"`
+	LastUsedAt    *time.Time  `json:"last_used_at,omitempty"`
 }
 type MCPGrantStore interface {
 	BeginMCP(context.Context, MCPRequest) error

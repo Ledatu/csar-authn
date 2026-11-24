@@ -55,6 +55,9 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 		if request.SessionDays > 0 && !refreshAllowed {
 			return store.ErrNotFound
 		}
+		if err := s.checkMCPCapacityTx(ctx, tx, owner); err != nil {
+			return err
+		}
 		var singleton *string
 		selected := selection.SellerIDs
 		if len(selected) == 1 {
@@ -70,7 +73,10 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 			return err
 		}
 		_, err = s.bindCredentialCallerTx(ctx, tx, owner, request.CallerID, request.NewCaller, caller.OAuthAccess, r.GrantID.String())
-		return err
+		if err != nil {
+			return err
+		}
+		return s.enqueueMCP(ctx, tx, "credentials.mcp.create", r.GrantID, owner, "oauth")
 	})
 	return r, err
 }
@@ -160,6 +166,9 @@ func scanMCPGrant(row pgx.Row, delegation bool) (store.MCPGrant, error) {
 func (s *Store) DelegateMCP(ctx context.Context, accessHash, delegatedHash string, discoveryOnly bool) (store.MCPGrant, error) {
 	var g store.MCPGrant
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := touchMCP(ctx, tx, accessHash); err != nil {
+			return err
+		}
 		var err error
 		g, err = scanMCPGrant(tx.QueryRow(ctx, `WITH granted AS (
     SELECT id,owner_id,client_id,seller_id,all_campaigns,selected_ids,least(expires_at,access_expires_at,now()+interval '30 seconds') AS expires_at FROM seller_mcp_grants
@@ -183,7 +192,7 @@ func (s *Store) ConsumeMCP(ctx context.Context, delegatedHash string) (store.MCP
 }
 
 func (s *Store) ListMCP(ctx context.Context, owner uuid.UUID) ([]store.MCPGrant, error) {
-	rows, err := s.pool.Query(ctx, `SELECT g.id,g.owner_id,g.client_id,coalesce(g.seller_id::text,''),g.expires_at,g.all_campaigns,CASE WHEN g.seller_id IS NULL THEN g.selected_ids ELSE ARRAY[g.seller_id::text] END,g.client_name,
+	rows, err := s.pool.Query(ctx, `SELECT g.id,g.owner_id,g.client_id,coalesce(g.seller_id::text,''),g.expires_at,g.all_campaigns,CASE WHEN g.seller_id IS NULL THEN g.selected_ids ELSE ARRAY[g.seller_id::text] END,g.client_name,g.last_used_at,
  c.id,coalesce(c.caller_kind,''),coalesce(c.label,'') FROM seller_mcp_grants g
  LEFT JOIN registered_caller_credentials b ON b.credential_kind='oauth_access' AND b.credential_id=g.id::text AND b.owner_user_id=g.owner_id
  LEFT JOIN registered_callers c ON c.id=b.caller_id AND c.owner_user_id=g.owner_id AND c.revoked_at IS NULL
@@ -195,7 +204,7 @@ func (s *Store) ListMCP(ctx context.Context, owner uuid.UUID) ([]store.MCPGrant,
 	grants := []store.MCPGrant{}
 	for rows.Next() {
 		var g store.MCPGrant
-		if err := rows.Scan(&g.ID, &g.OwnerID, &g.ClientID, &g.SellerID, &g.ExpiresAt, &g.AllCampaigns, &g.SellerIDs, &g.ClientName, &g.CallerID, &g.CallerKind, &g.CallerLabel); err != nil {
+		if err := rows.Scan(&g.ID, &g.OwnerID, &g.ClientID, &g.SellerID, &g.ExpiresAt, &g.AllCampaigns, &g.SellerIDs, &g.ClientName, &g.LastUsedAt, &g.CallerID, &g.CallerKind, &g.CallerLabel); err != nil {
 			return nil, err
 		}
 		grants = append(grants, g)
@@ -203,11 +212,29 @@ func (s *Store) ListMCP(ctx context.Context, owner uuid.UUID) ([]store.MCPGrant,
 	return grants, rows.Err()
 }
 func (s *Store) RevokeMCP(ctx context.Context, owner, id uuid.UUID) error {
-	tag, err := s.pool.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id=$1 AND owner_id=$2`, id, owner)
-	if err == nil && tag.RowsAffected() == 0 {
-		return store.ErrNotFound
-	}
-	return err
+	return pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		var client string
+		var bound bool
+		err := tx.QueryRow(ctx, `SELECT client_id,EXISTS(SELECT 1 FROM registered_caller_credentials WHERE credential_kind='oauth_access' AND credential_id=$1::uuid::text AND owner_user_id=$2)
+ FROM seller_mcp_grants WHERE id=$1 AND owner_id=$2 FOR UPDATE`, id, owner).Scan(&client, &bound)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return store.ErrNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if bound && s.outbox == nil {
+			return store.ErrCallerAuditRequired
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE id=$1 AND owner_id=$2`, id, owner); err != nil {
+			return err
+		}
+		method := "oauth"
+		if client == "" {
+			method = "token"
+		}
+		return s.enqueueMCP(ctx, tx, "credentials.mcp.revoke", id, owner, method)
+	})
 }
 
 func (s *Store) ActiveMCPSelection(ctx context.Context, owner, grant uuid.UUID) (store.MCPSelection, error) {

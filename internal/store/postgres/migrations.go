@@ -473,6 +473,7 @@ ALTER TABLE seller_mcp_requests ADD COLUMN client_name text NOT NULL DEFAULT '',
  ADD COLUMN refresh_allowed boolean NOT NULL DEFAULT true;
 ALTER TABLE seller_mcp_grants ADD COLUMN client_name text NOT NULL DEFAULT '';
 `},
+	{Name: "029_mcp_last_used", Up: `ALTER TABLE seller_mcp_grants ADD COLUMN last_used_at timestamptz;`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.
