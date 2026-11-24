@@ -99,6 +99,7 @@ func (h *Handler) registerSellerMCP(mux *http.ServeMux, clients sellerMCPRegistr
 		o.dynamic = &mcpDynamicClients{store: clientStore, cache: opts.Redis, http: opts.HTTPClient,
 			limiter: limiter, locker: lock.NewRedisLocker(opts.Redis), slots: make(chan struct{}, 8)}
 		mux.HandleFunc("POST /oauth/mcp/register", o.registerClient)
+		mux.HandleFunc("POST /oauth/mcp/tokens", o.createManualToken)
 	}
 	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
 	mux.HandleFunc("POST /internal/seller-mcp/consume-discovery", o.introspect)
@@ -225,7 +226,7 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 
 func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if r.Header.Get("Origin") != sellerOrigin {
+	if !apiKeyMutationOriginAllowed(r.Header.Get("Origin")) {
 		oauthError(w, 403, "access_denied")
 		return
 	}
@@ -262,19 +263,8 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 			}
 			in.SellerIDs = []string{in.Seller}
 		}
-		if len(in.SellerIDs) > 256 || in.AllCampaigns != (len(in.SellerIDs) == 0) {
-			oauthError(w, 400, "invalid_request")
+		if !o.validateMCPSelection(w, r, user.ID, &in.MCPSelection) {
 			return
-		}
-		slices.Sort(in.SellerIDs)
-		for i, seller := range in.SellerIDs {
-			if !validWBSellerID(seller) || i > 0 && seller == in.SellerIDs[i-1] {
-				oauthError(w, 400, "invalid_request")
-				return
-			}
-			if !o.allowSellerScopes(w, r, user.ID, seller, []string{store.APIKeyScopeAnalyticsRead}) {
-				return
-			}
 		}
 		code = "ac_" + randomToken()
 		codeHash = hashValue(code)
@@ -307,7 +297,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	tx, err := o.grants.DecideMCP(r.Context(), binding, user.ID, in.MCPSelection, codeHash)
-	if errors.Is(err, store.ErrCallerLimit) {
+	if errors.Is(err, store.ErrCallerLimit) || errors.Is(err, store.ErrMCPConnectionLimit) {
 		oauthError(w, 409, "caller_limit_reached")
 		return
 	}
@@ -531,7 +521,7 @@ func (o *sellerOAuth) connections(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, 200, map[string]any{"items": grants})
 }
 func (o *sellerOAuth) revoke(w http.ResponseWriter, r *http.Request) {
-	if r.Header.Get("Origin") != sellerOrigin {
+	if !apiKeyMutationOriginAllowed(r.Header.Get("Origin")) {
 		oauthError(w, http.StatusForbidden, "access_denied")
 		return
 	}

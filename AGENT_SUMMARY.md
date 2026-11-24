@@ -1,5 +1,17 @@
 # csar-authn Agent Summary
 
+Dynamic onboarding also exposes owner-session `POST /oauth/mcp/tokens` for
+clients that support Bearer headers but cannot perform OAuth. It issues only
+hashed, MCP-resource credentials, with no OAuth client, code or refresh token,
+an explicit1–168h deadline, selected/all-store consent and an atomic caller
+binding/audit. API PATs remain a separate audience. Both issuance paths serialize
+the100-live-connection owner cap; changing clients cannot reset it. Consent and
+revoke reuse the API-key trusted seller/dev-origin guard. Connection last-use is
+approximate to one write/hour; delegation updates it before shared grant locking.
+Migration029 adds only nullable last_used_at. Bound connection revocation requires
+the transactional outbox and deletes outstanding proofs/refresh rows atomically.
+The feature remains disabled unless dynamic onboarding is enabled; no rollout.
+
 New owner-issued API keys and MCP approvals create their caller in the same
 credential/binding/audit transaction unless the owner reuses an existing caller.
 `caller_kind: agent` is an explicit owner choice; omission registers a generic
