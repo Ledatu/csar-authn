@@ -66,9 +66,15 @@ func (o *sellerOAuth) eligible(w http.ResponseWriter, r *http.Request) {
 			oauthError(w, 503, "temporarily_unavailable")
 			return
 		}
-		httpx.WriteJSON(w, http.StatusOK, map[string]any{
+		response := map[string]any{
 			"platform_admin": slices.Contains(roles.Roles, "platform_admin"), "seller_ids": []string{},
-		})
+		}
+		if in.Grant != "" && r.URL.Query().Get("selection") == "v1" {
+			// Consent narrows Campaigns' candidate query before pagination. It
+			// never replaces current membership/lifecycle/analytics checks.
+			response["selection"] = selection
+		}
+		httpx.WriteJSON(w, http.StatusOK, response)
 		return
 	}
 	ids := make([]string, 0, len(in.Sellers))
