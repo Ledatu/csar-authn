@@ -7,7 +7,10 @@ beside its dedicated CA. The explicit registration path has no application
 default; existing origin/MCP wrappers retain their old compatibility peer.
 CA/pool transport registration admits only configured peers, while each issuer
 checks its own immutable CA+peer pair per request. Sharing a CA with another
-feature never imports that feature's peer authorization. Peer/profile changes
+feature never imports that feature's peer authorization. Dedicated roots are
+isolated from general personal-key introspection: that compatibility receiver
+requires an actually verified general-service chain and excludes dedicated issuer
+roots even when the leaf uses the same `csar-client` CN. Peer/profile changes
 are restart-only and rejected before reload mutation. Existing dedicated/general
 CA separation and pool-specific registration checks remain. This pins merged
 Core trust configuration but changes no certificate, key, token contract, Redis

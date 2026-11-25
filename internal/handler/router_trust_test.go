@@ -90,3 +90,30 @@ func TestIssuerPeerPoliciesStayIsolatedOnSharedCA(t *testing.T) {
 		t.Fatal("wildcard peer accepted")
 	}
 }
+
+func TestDedicatedIssuerRootCannotImpersonateGeneralRouter(t *testing.T) {
+	h, _, _ := newSessionsHandler(t, nil)
+	dedicated := &x509.Certificate{Raw: []byte("dedicated issuer root")}
+	general := &x509.Certificate{Raw: []byte("general service root")}
+	peer := &x509.Certificate{Raw: []byte("router leaf"), Subject: pkix.Name{CommonName: "csar-client"}}
+	h.routerCAs = []*routerCARegistration{{ca: dedicated}}
+	for name, tc := range map[string]struct {
+		state  *tls.ConnectionState
+		status int
+	}{
+		"general verified router":      {&tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer}, VerifiedChains: [][]*x509.Certificate{{peer, general}}}, 200},
+		"matching CN wrong feature CA": {&tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer}, VerifiedChains: [][]*x509.Certificate{{peer, dedicated}}}, 403},
+		"unverified matching CN":       {&tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer}}, 403},
+		"missing TLS":                  {nil, 403},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r := httptest.NewRequest("POST", "/auth/token/introspect", strings.NewReader(`{"token":"invalid"}`))
+			r.TLS = tc.state
+			w := httptest.NewRecorder()
+			h.handleIntrospectAPIKey(w, r)
+			if w.Code != tc.status {
+				t.Fatal("general/dedicated ingress confused", w.Code, w.Body.String())
+			}
+		})
+	}
+}

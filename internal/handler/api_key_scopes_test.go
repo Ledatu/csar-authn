@@ -167,7 +167,8 @@ func TestAPIKeyIntrospectionUsesStoredScopes(t *testing.T) {
 			st.key = &store.APICredential{ID: uuid.New(), OwnerID: testUserID, SellerID: "seller", Scopes: scopes, TokenHash: hex.EncodeToString(digest[:]), ExpiresAt: time.Now().Add(time.Hour)}
 			invoke := func() *httptest.ResponseRecorder {
 				r := httptest.NewRequest(http.MethodPost, "/internal/api-keys/introspect", strings.NewReader(`{"token":"`+raw+`"}`))
-				r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "csar-client"}}}}
+				peer := &x509.Certificate{Subject: pkix.Name{CommonName: "csar-client"}}
+				r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer}, VerifiedChains: [][]*x509.Certificate{{peer, {Raw: []byte("general service CA")}}}}
 				w := httptest.NewRecorder()
 				th.handler.handleIntrospectAPIKey(w, r)
 				return w

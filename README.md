@@ -9,6 +9,8 @@ omitted configuration preserves the existing origin/MCP compatibility peer.
 Multiple issuer features may share a dedicated CA/listener, but each checks its
 own CA/peer pair and cannot adopt another feature's allowed peer. General service
 trust never becomes dedicated issuer trust through the registration cache.
+Conversely, a dedicated issuer root cannot enter the general personal-key
+introspection receiver by presenting the same client CN.
 
 Changing peer or credential-profile configuration requires restart before any
 reload mutation. This source change does not rotate certificates or JWT keys,
