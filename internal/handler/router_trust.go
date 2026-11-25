@@ -7,16 +7,28 @@ import (
 	"encoding/pem"
 	"errors"
 	"os"
+	"sync"
+
+	"github.com/ledatu/csar-core/authntokens"
 )
 
 type routerCARegistration struct {
-	ca   *x509.Certificate
-	pool *x509.CertPool
+	ca    *x509.Certificate
+	pool  *x509.CertPool
+	mu    sync.RWMutex
+	peers map[string]bool
 }
 
 // registerRouterCA is startup-only. Dedicated gateway ingress may share a CA
 // between issuer features but must never inherit the general service trust root.
 func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Certificate, error) {
+	return h.registerRouterTrust(file, sellerRouterCN, listener)
+}
+
+func (h *Handler) registerRouterTrust(file, peerCN string, listener *tls.Config) (*x509.Certificate, error) {
+	if !authntokens.ValidProfileID(peerCN) {
+		return nil, errors.New("exact issuer ingress peer required")
+	}
 	if listener == nil || listener.ClientAuth != tls.RequireAndVerifyClientCert || listener.ClientCAs == nil {
 		return nil, errors.New("issuer requires a verified client TLS listener")
 	}
@@ -34,28 +46,41 @@ func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Cer
 	}
 	for _, known := range h.routerCAs {
 		if ca.Equal(known.ca) && known.pool == listener.ClientCAs {
+			known.mu.Lock()
+			known.peers[peerCN] = true
+			known.mu.Unlock()
 			return known.ca, nil
 		}
 	}
 	if _, err := ca.Verify(x509.VerifyOptions{Roots: listener.ClientCAs, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}}); err == nil {
 		return nil, errors.New("router CA must be separate from general service trust")
 	}
+	registration := &routerCARegistration{ca: ca, pool: listener.ClientCAs, peers: map[string]bool{peerCN: true}}
+	// Transport admits the explicitly registered peers for this CA. Every issuer
+	// separately checks its own immutable CA+peer pair; this union never grants
+	// access to another feature merely because it shares the listener/root.
 	listener.ClientCAs.AddCertWithConstraint(ca, func(chain []*x509.Certificate) error {
-		if len(chain) == 0 || chain[0].Subject.CommonName != sellerRouterCN {
+		registration.mu.RLock()
+		defer registration.mu.RUnlock()
+		if len(chain) == 0 || !registration.peers[chain[0].Subject.CommonName] {
 			return errors.New("unexpected dedicated router identity")
 		}
 		return nil
 	})
-	h.routerCAs = append(h.routerCAs, routerCARegistration{ca: ca, pool: listener.ClientCAs})
+	h.routerCAs = append(h.routerCAs, registration)
 	return ca, nil
 }
 
 func verifiedRouterCA(state *tls.ConnectionState, ca *x509.Certificate) bool {
-	if state == nil || ca == nil {
+	return verifiedRouterTrust(state, ca, sellerRouterCN)
+}
+
+func verifiedRouterTrust(state *tls.ConnectionState, ca *x509.Certificate, peerCN string) bool {
+	if state == nil || ca == nil || !authntokens.ValidProfileID(peerCN) {
 		return false
 	}
 	for _, chain := range state.VerifiedChains {
-		if len(chain) >= 2 && chain[0].Subject.CommonName == sellerRouterCN && chain[len(chain)-1].Equal(ca) {
+		if len(chain) >= 2 && chain[0].Subject.CommonName == peerCN && chain[len(chain)-1].Equal(ca) {
 			return true
 		}
 	}

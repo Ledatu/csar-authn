@@ -5,10 +5,33 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ledatu/csar-core/authnconfig"
 	"github.com/ledatu/csar-core/email"
 	"github.com/ledatu/csar-core/secret"
 	"github.com/ledatu/csar-core/ycloud"
 )
+
+func TestIssuerPeerAndProfileChangesRequireRestart(t *testing.T) {
+	startup := &Config{OriginRouterCAFile: "/dedicated/ca.pem", OriginRouterPeerCN: "gateway", Credentials: &authnconfig.CredentialConfig{Version: 1}}
+	next := *startup
+	next.OriginRouterPeerCN = "other-gateway"
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("peer trust changed on reload")
+	}
+	next = *startup
+	next.Credentials = &authnconfig.CredentialConfig{Version: 2}
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("credential policy changed on reload")
+	}
+	next = *startup
+	next.Credentials = nil
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("credential policy removed on reload")
+	}
+	if err := ValidateReload(startup, startup); err != nil {
+		t.Fatal("unchanged trust rejected", err)
+	}
+}
 
 func postboxReloadConfig() *Config {
 	return &Config{EmailOTP: &EmailOTPConfig{

@@ -113,6 +113,8 @@ github.com/kylelemons/godebug v1.1.0 h1:RPNrshWIDI6G2gRW9EHilWtl7Z6Sb1BR0xunSBf0
 github.com/kylelemons/godebug v1.1.0/go.mod h1:9/0rRGxNHcop5bhtWyNeEfOS8JIWk580+fNqagV/RAw=
 github.com/ledatu/csar-core v0.1.48-0.20261124100717-34bbe3cf7777 h1:44wlgciPkbaFr0sBczWHo8KkHi+eJlAzPBc/0/wUxyg=
 github.com/ledatu/csar-core v0.1.48-0.20261124100717-34bbe3cf7777/go.mod h1:im0Oy/+WaoNQ+5nwpidQ5HU76LsRV9+1+GLHyG38vfs=
+github.com/ledatu/csar-core v0.1.48-0.20261125224622-4088efa87507 h1:RXSKg6nSjPDuR3v96BaQ2rPTHxokTYbQlrV+2yP6W70=
+github.com/ledatu/csar-core v0.1.48-0.20261125224622-4088efa87507/go.mod h1:im0Oy/+WaoNQ+5nwpidQ5HU76LsRV9+1+GLHyG38vfs=
 github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b h1:SwzPTLG/WQOPjGtc6kuXxZMLiclmgBmDLeMwDgJh7EQ=
 github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b/go.mod h1:ZGtHTVNny/O2IR7wsFUzRn0NZ9HgdPD/WIsVlbIF/sc=
 github.com/markbates/goth v1.80.0 h1:NnvatczZDzOs1hn9Ug+dVYf2Viwwkp/ZDX5K+GLjan8=

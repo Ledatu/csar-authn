@@ -14,19 +14,26 @@ import (
 type originIssuer struct {
 	handler  *Handler
 	routerCA *x509.Certificate
+	peerCN   string
 }
 
 // RegisterOriginContext is opt-in and must run before the listener starts.
 // Only the dedicated router may assert an already authenticated root principal.
 func (h *Handler) RegisterOriginContext(mux *http.ServeMux, file string, listener *tls.Config) error {
+	return h.RegisterOriginContextWithPeer(mux, file, sellerRouterCN, listener)
+}
+
+// RegisterOriginContextWithPeer is the explicit generic trust path. The existing
+// wrapper retains its compatibility peer until application consumers migrate.
+func (h *Handler) RegisterOriginContextWithPeer(mux *http.ServeMux, file, peerCN string, listener *tls.Config) error {
 	if file == "" {
 		return nil
 	}
-	ca, err := h.registerRouterCA(file, listener)
+	ca, err := h.registerRouterTrust(file, peerCN, listener)
 	if err != nil {
 		return err
 	}
-	o := &originIssuer{handler: h, routerCA: ca}
+	o := &originIssuer{handler: h, routerCA: ca, peerCN: peerCN}
 	mux.HandleFunc("POST /internal/origin-context/root", o.root)
 	mux.HandleFunc("POST /svc/authn/origin-context/delegate", o.delegate)
 	return nil
@@ -34,7 +41,7 @@ func (h *Handler) RegisterOriginContext(mux *http.ServeMux, file string, listene
 
 func (o *originIssuer) trusted(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Cache-Control", "no-store")
-	if !verifiedRouterCA(r.TLS, o.routerCA) {
+	if !verifiedRouterTrust(r.TLS, o.routerCA, o.peerCN) {
 		http.Error(w, "dedicated router required", http.StatusForbidden)
 		return false
 	}

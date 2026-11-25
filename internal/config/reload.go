@@ -15,6 +15,9 @@ func ValidateReload(startup, next *Config) error {
 	if next.OriginRouterCAFile != startup.OriginRouterCAFile {
 		return errors.New("origin_router_ca_file requires a restart")
 	}
+	if next.OriginRouterPeerCN != startup.OriginRouterPeerCN || !reflect.DeepEqual(startup.Credentials, next.Credentials) {
+		return errors.New("issuer peer and credential profile settings require a restart")
+	}
 	if next.LegacyUsersSync.LockDatabaseDSN != startup.LegacyUsersSync.LockDatabaseDSN {
 		return errors.New("legacy_users_sync.lock_database_dsn requires a restart")
 	}

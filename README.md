@@ -1,5 +1,20 @@
 # csar-authn
 
+## Explicit origin issuer ingress peer
+
+`origin_router_peer_cn` optionally configures the exact verified gateway leaf CN
+for the origin issuer, paired with `origin_router_ca_file`. Both are startup-only.
+The generic registration path requires an explicit peer and a dedicated root;
+omitted configuration preserves the existing origin/MCP compatibility peer.
+Multiple issuer features may share a dedicated CA/listener, but each checks its
+own CA/peer pair and cannot adopt another feature's allowed peer. General service
+trust never becomes dedicated issuer trust through the registration cache.
+
+Changing peer or credential-profile configuration requires restart before any
+reload mutation. This source change does not rotate certificates or JWT keys,
+enable generic credential issuance, alter outbound Telegram-ID JWT signing, or
+publish deployment configuration.
+
 A standalone OAuth authentication service for the [**csar**](https://github.com/ledatu/csar) platform. It handles multi-provider OAuth login via [Goth](https://github.com/markbates/goth), maps social identities to internal user UUIDs stored in PostgreSQL, issues signed JWT session tokens, and exposes a JWKS endpoint so the csar router can validate sessions independently.
 
 ## Features
