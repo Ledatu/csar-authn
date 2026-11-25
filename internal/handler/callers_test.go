@@ -83,7 +83,8 @@ func TestRegisteredAPIKeyIdentityComesFromAuthenticatedToken(t *testing.T) {
 	}
 	introspect := func() *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/auth/token/introspect", strings.NewReader(`{"token":"`+issued.Token+`","caller_kind":"human"}`))
-		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{{Subject: pkix.Name{CommonName: "csar-client"}}}}
+		peer := &x509.Certificate{Subject: pkix.Name{CommonName: "csar-client"}}
+		r.TLS = &tls.ConnectionState{PeerCertificates: []*x509.Certificate{peer}, VerifiedChains: [][]*x509.Certificate{{peer, {Raw: []byte("general service CA")}}}}
 		w := httptest.NewRecorder()
 		th.handler.handleIntrospectAPIKey(w, r)
 		return w

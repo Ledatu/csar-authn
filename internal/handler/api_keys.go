@@ -265,8 +265,7 @@ func (h *Handler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleIntrospectAPIKey(w http.ResponseWriter, r *http.Request) {
 	// This endpoint has no public CSAR route and the authn server requires
 	// mTLS. In particular, it never accepts a personal key as caller auth.
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 ||
-		r.TLS.PeerCertificates[0].Subject.CommonName != "csar-client" {
+	if !h.verifiedServiceRouter(r.TLS) {
 		httpx.WriteError(w, csarerrors.Forbidden("mTLS required"))
 		return
 	}

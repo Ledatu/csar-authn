@@ -496,7 +496,13 @@ func run(
 	if originCAFile == "" {
 		originCAFile = cfg.OriginRouterCAFile
 	}
-	if err := h.RegisterOriginContext(mux, originCAFile, srv.TLSConfig()); err != nil {
+	registerOrigin := func() error {
+		if cfg.OriginRouterPeerCN != "" {
+			return h.RegisterOriginContextWithPeer(mux, originCAFile, cfg.OriginRouterPeerCN, srv.TLSConfig())
+		}
+		return h.RegisterOriginContext(mux, originCAFile, srv.TLSConfig())
+	}
+	if err := registerOrigin(); err != nil {
 		return err
 	}
 	runErr := srv.Run(ctx)
