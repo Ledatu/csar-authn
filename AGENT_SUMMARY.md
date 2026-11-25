@@ -300,3 +300,13 @@ password without its dedicated address fails closed. The dedicated settings
 never populate or change generic Config.Redis: PostgreSQL-backed STS replay
 protection stays PostgreSQL-backed. Production can reuse redis:6379 HAProxy and
 the existing cluster password without changing Redis servers, limits or keys.
+
+## MCP discovery candidate selection
+
+The existing Campaigns-only eligibility roster probe includes optional `selection`
+only when `?selection=v1` is requested with a live owner-bound grant. Verified router mTLS and the pinned
+Campaigns service principal remain mandatory. Selection is consent metadata only,
+never proof of current tenant/lifecycle/analytics access. Old consumers retain the small original response;
+new consumers may narrow candidate queries before pagination, then check live
+eligibility normally. Browser probes have no selection. No route, token, migration
+or deployment changes accompany this additive response.
