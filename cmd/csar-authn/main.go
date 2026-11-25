@@ -474,12 +474,11 @@ func run(
 	var mcpRedis *redis.Client
 	var metadataClient *http.Client
 	if dynamicMCP {
-		if cfg.Redis == nil || cfg.Redis.Address == "" {
-			return fmt.Errorf("dynamic MCP onboarding requires Redis")
+		options, err := sellerMCPRedisOptions(cfg)
+		if err != nil {
+			return err
 		}
-		mcpRedis = redis.NewClient(&redis.Options{Addr: cfg.Redis.Address, Password: cfg.Redis.Password, DB: cfg.Redis.DB,
-			MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 8, PoolTimeout: 200 * time.Millisecond,
-			DialTimeout: time.Second, ReadTimeout: 200 * time.Millisecond, WriteTimeout: 200 * time.Millisecond})
+		mcpRedis = redis.NewClient(options)
 		defer func() { _ = mcpRedis.Close() }()
 		if err := mcpRedis.Ping(ctx).Err(); err != nil {
 			return fmt.Errorf("MCP onboarding Redis unavailable")
@@ -509,6 +508,24 @@ func run(
 		}
 	}
 	return runErr
+}
+
+// sellerMCPRedisOptions selects the issuer's connection without changing the
+// generic Redis configuration, which also selects the STS replay backend.
+func sellerMCPRedisOptions(cfg *config.Config) (*redis.Options, error) {
+	selected := cfg.Redis
+	address, password := os.Getenv("MCP_OAUTH_REDIS_ADDR"), os.Getenv("MCP_OAUTH_REDIS_PASSWORD")
+	if address != "" {
+		selected = &config.RedisConfig{Address: address, Password: password}
+	} else if password != "" {
+		return nil, fmt.Errorf("MCP_OAUTH_REDIS_PASSWORD requires MCP_OAUTH_REDIS_ADDR")
+	}
+	if selected == nil || selected.Address == "" {
+		return nil, fmt.Errorf("dynamic MCP onboarding requires Redis")
+	}
+	return &redis.Options{Addr: selected.Address, Password: selected.Password, DB: selected.DB,
+		MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 8, PoolTimeout: 200 * time.Millisecond,
+		DialTimeout: time.Second, ReadTimeout: 200 * time.Millisecond, WriteTimeout: 200 * time.Millisecond}, nil
 }
 
 func optionalBoolEnv(name string, fallback bool) (bool, error) {

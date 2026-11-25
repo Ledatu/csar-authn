@@ -290,3 +290,13 @@ The exact callback path/query remains bound, including at code redemption.
 Existing grants retain their consent-time policy and fixed deadline; remote
 metadata failure blocks new authorization without redefining an issued grant.
 The feature remains opt-in; no deployment or production flags change here.
+
+## MCP Redis isolation
+
+Dynamic MCP startup accepts MCP_OAUTH_REDIS_ADDR and MCP_OAUTH_REDIS_PASSWORD
+for its existing bounded pool/cache/admission store (DB0). When absent, the
+existing generic redis configuration remains a compatibility fallback. A
+password without its dedicated address fails closed. The dedicated settings
+never populate or change generic Config.Redis: PostgreSQL-backed STS replay
+protection stays PostgreSQL-backed. Production can reuse redis:6379 HAProxy and
+the existing cluster password without changing Redis servers, limits or keys.
