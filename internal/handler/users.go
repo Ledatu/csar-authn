@@ -12,6 +12,8 @@ import (
 
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-core/apierror"
+	"github.com/ledatu/csar-core/authnconfig"
+	"github.com/ledatu/csar-core/httpx"
 	pb "github.com/ledatu/csar-proto/csar/authz/v1"
 )
 
@@ -24,18 +26,6 @@ const (
 	// maxBrowserUserResolveIDs bounds response size; clients chunk larger batches.
 	maxBrowserUserResolveIDs = 200
 )
-
-// aurumProvider resolves ids that are authn user UUIDs themselves (audit trails
-// store the canonical id, not a linked account).
-const aurumProvider = "aurum"
-
-// browserResolvableProviders restricts directory lookups to providers the seller
-// UI actually renders. Without this the endpoint becomes a generic identity
-// oracle over every linked OAuth account.
-var browserResolvableProviders = map[string]struct{}{
-	"telegram":    {},
-	aurumProvider: {},
-}
 
 type adminUserListItem struct {
 	ID          string `json:"id"`
@@ -147,7 +137,7 @@ func looksLikeUUID(v string) bool {
 
 func (h *Handler) handleResolveServiceUsers(w http.ResponseWriter, r *http.Request) {
 	var req serviceUserResolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readDirectoryJSON(w, r, &req); err != nil {
 		apierror.New("bad_request", http.StatusBadRequest, "invalid request body").Write(w)
 		return
 	}
@@ -223,6 +213,8 @@ type browserUserResolveResponse struct {
 
 type browserUserLookupRequest struct {
 	Identifier string `json:"identifier"`
+	Provider   string `json:"provider,omitempty"`
+	Projection string `json:"projection,omitempty"`
 }
 
 type browserUserLookupResponse struct {
@@ -236,13 +228,13 @@ func (h *Handler) handleResolveBrowserUsers(w http.ResponseWriter, r *http.Reque
 	}
 
 	var req browserUserResolveRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readDirectoryJSON(w, r, &req); err != nil {
 		apierror.New("bad_request", http.StatusBadRequest, "invalid request body").Write(w)
 		return
 	}
 
-	provider := strings.TrimSpace(strings.ToLower(req.Provider))
-	if _, ok := browserResolvableProviders[provider]; !ok {
+	provider, allowed := h.cfg.Load().BrowserDirectory.ResolveProvider(strings.TrimSpace(strings.ToLower(req.Provider)))
+	if !allowed {
 		apierror.New("bad_request", http.StatusBadRequest, "unsupported provider").Write(w)
 		return
 	}
@@ -255,12 +247,12 @@ func (h *Handler) handleResolveBrowserUsers(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	if provider == aurumProvider {
+	if provider == "subject" {
 		h.resolveBrowserUsersByID(w, r, req.IDs)
 		return
 	}
 
-	ids := dedupeProviderUserIDs(req.IDs)
+	ids := h.directoryIDs(provider, req.IDs)
 	if len(ids) == 0 {
 		writeBrowserUsers(w, []browserUserItem{})
 		return
@@ -285,7 +277,7 @@ func (h *Handler) resolveBrowserUsersByID(w http.ResponseWriter, r *http.Request
 
 	resolved, err := h.store.GetUsersByIDs(r.Context(), ids)
 	if err != nil {
-		h.logger.Error("failed to resolve browser users", "provider", aurumProvider, "error", err)
+		h.logger.Error("failed to resolve browser users", "provider", "subject", "error", err)
 		apierror.New("internal_error", http.StatusInternalServerError, "failed to resolve users").Write(w)
 		return
 	}
@@ -300,7 +292,7 @@ func (h *Handler) resolveBrowserUsersByID(w http.ResponseWriter, r *http.Request
 		})
 	}
 
-	writeBrowserUsers(w, h.browserUserItems(r.Context(), aurumProvider, users))
+	writeBrowserUsers(w, h.browserUserItems(r.Context(), "subject", users))
 }
 
 func (h *Handler) handleLookupBrowserUser(w http.ResponseWriter, r *http.Request) {
@@ -310,7 +302,7 @@ func (h *Handler) handleLookupBrowserUser(w http.ResponseWriter, r *http.Request
 	}
 
 	var req browserUserLookupRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := readDirectoryJSON(w, r, &req); err != nil {
 		apierror.New("bad_request", http.StatusBadRequest, "invalid request body").Write(w)
 		return
 	}
@@ -321,7 +313,23 @@ func (h *Handler) handleLookupBrowserUser(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	item, found, err := h.lookupBrowserUser(r.Context(), identifier)
+	provider, allowed := h.cfg.Load().BrowserDirectory.ResolveProvider(req.Provider)
+	if !allowed {
+		apierror.New("bad_request", 400, "unsupported provider").Write(w)
+		return
+	}
+	projectionProvider := ""
+	if req.Projection != "" {
+		directory := h.cfg.Load().BrowserDirectory
+		if directory != nil {
+			projectionProvider = directory.Projections[req.Projection]
+		}
+		if projectionProvider == "" || provider != "subject" {
+			apierror.New("bad_request", 400, "unsupported projection").Write(w)
+			return
+		}
+	}
+	item, found, err := h.lookupDirectoryUser(r.Context(), provider, projectionProvider, identifier)
 	if err != nil {
 		h.logger.Error("failed to look up browser user", "error", err)
 		apierror.New("internal_error", http.StatusInternalServerError, "failed to look up user").Write(w)
@@ -338,51 +346,70 @@ func (h *Handler) handleLookupBrowserUser(w http.ResponseWriter, r *http.Request
 	_ = json.NewEncoder(w).Encode(browserUserLookupResponse{User: item})
 }
 
-// lookupBrowserUser resolves exactly one identifier: either an internal user
-// UUID or a numeric Telegram id. Matching is exact by design — no prefix or
-// substring search, so this cannot be walked to enumerate the user base.
-func (h *Handler) lookupBrowserUser(ctx context.Context, identifier string) (browserUserItem, bool, error) {
-	const telegramProvider = "telegram"
-
-	if id, err := uuid.Parse(identifier); err == nil {
-		resolved, err := h.store.GetUsersByIDs(ctx, []uuid.UUID{id})
-		if err != nil || len(resolved) == 0 {
+// lookupDirectoryUser resolves only exact IDs under explicit projection policy.
+func (h *Handler) lookupDirectoryUser(ctx context.Context, provider, projection, identifier string) (browserUserItem, bool, error) {
+	if provider != "subject" {
+		ids := h.directoryIDs(provider, []string{identifier})
+		if len(ids) == 0 {
+			return browserUserItem{}, false, nil
+		}
+		users, err := h.store.GetUsersByProviderIDs(ctx, provider, ids)
+		if err != nil || len(users) == 0 {
 			return browserUserItem{}, false, err
 		}
-		user := resolved[0].User
-
-		// Surface the telegram link when there is one; the caller needs it to
-		// talk to the legacy member endpoints.
-		providerUserID, metadata := h.telegramLink(ctx, user.ID)
-		return h.browserUserItem(ctx, telegramProvider, &store.ProviderUser{
-			User:             user,
-			ProviderUserID:   providerUserID,
-			ProviderMetadata: metadata,
-		}), true, nil
+		return h.browserUserItem(ctx, provider, &users[0]), true, nil
 	}
-
-	if !isNumericIdentifier(identifier) {
+	id, err := uuid.Parse(identifier)
+	if err != nil || id == uuid.Nil {
 		return browserUserItem{}, false, nil
 	}
-
-	users, err := h.store.GetUsersByProviderIDs(ctx, telegramProvider, []string{identifier})
+	users, err := h.store.GetUsersByIDs(ctx, []uuid.UUID{id})
 	if err != nil || len(users) == 0 {
 		return browserUserItem{}, false, err
 	}
-	return h.browserUserItem(ctx, telegramProvider, &users[0]), true, nil
-}
-
-func (h *Handler) telegramLink(ctx context.Context, userID uuid.UUID) (string, map[string]interface{}) {
-	accounts, err := h.store.GetOAuthAccountsByUserID(ctx, userID)
+	u := store.ProviderUser{User: users[0].User, ProviderUserID: users[0].RequestedID.String()}
+	if projection == "" {
+		return h.browserUserItem(ctx, "subject", &u), true, nil
+	}
+	accounts, err := h.store.GetOAuthAccountsByUserID(ctx, u.ID)
 	if err != nil {
-		return "", nil
+		return browserUserItem{}, false, err
 	}
 	for i := range accounts {
-		if accounts[i].Provider == "telegram" {
-			return accounts[i].ProviderUserID, accounts[i].ProviderMetadata
+		if accounts[i].Provider == projection {
+			u.ProviderUserID = accounts[i].ProviderUserID
+			u.ProviderMetadata = accounts[i].ProviderMetadata
+			return h.browserUserItem(ctx, projection, &u), true, nil
 		}
 	}
-	return "", nil
+	return browserUserItem{}, false, nil
+}
+
+func readDirectoryJSON(w http.ResponseWriter, r *http.Request, out any) error {
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<10)
+	return httpx.ReadStrictJSON(r, out)
+}
+
+func (h *Handler) directoryIDs(provider string, raw []string) []string {
+	directory := h.cfg.Load().BrowserDirectory
+	if directory == nil {
+		return nil
+	}
+	rule, ok := directory.Providers[provider]
+	if !ok {
+		return nil
+	}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(raw))
+	for _, id := range raw {
+		id = strings.TrimSpace(id)
+		if !authnconfig.ValidIdentityValue(id, 256) || rule.IDFormat == "numeric" && !isNumericIdentifier(id) || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func (h *Handler) browserUserItems(ctx context.Context, provider string, users []store.ProviderUser) []browserUserItem {
@@ -399,23 +426,24 @@ func (h *Handler) browserUserItem(ctx context.Context, provider string, u *store
 		Provider:       provider,
 		ProviderUserID: u.ProviderUserID,
 		DisplayName:    u.DisplayName,
-		Username:       providerUsername(u.ProviderMetadata),
+		Username:       h.directoryUsername(provider, u.ProviderMetadata),
 	}
 }
 
-// providerUsername reads the Telegram handle captured by the legacy JWT bridge.
-// Most accounts predate that path and have none, in which case callers fall back
-// to identifiers.
-func providerUsername(metadata map[string]interface{}) string {
-	raw, ok := metadata["legacy_username"]
-	if !ok {
+func (h *Handler) directoryUsername(provider string, metadata map[string]interface{}) string {
+	directory := h.cfg.Load().BrowserDirectory
+	if directory == nil {
 		return ""
 	}
-	username, ok := raw.(string)
-	if !ok {
+	key := directory.Providers[provider].UsernameMetadataKey
+	if key == "" {
 		return ""
 	}
-	return strings.TrimPrefix(strings.TrimSpace(username), "@")
+	username, _ := metadata[key].(string)
+	if !authnconfig.ValidIdentityValue(username, 128) {
+		return ""
+	}
+	return strings.TrimPrefix(username, "@")
 }
 
 func isNumericIdentifier(v string) bool {

@@ -90,7 +90,11 @@ func verifiedRouterTrust(state *tls.ConnectionState, ca *x509.Certificate, peerC
 // The compatibility personal-key receiver belongs to general service ingress.
 // A dedicated issuer CA must not inherit it by choosing the same leaf CN.
 func (h *Handler) verifiedServiceRouter(state *tls.ConnectionState) bool {
-	if state == nil || len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName != "csar-client" {
+	return h.verifiedGeneralPeer(state, "csar-client")
+}
+
+func (h *Handler) verifiedGeneralPeer(state *tls.ConnectionState, peerCN string) bool {
+	if state == nil || len(state.PeerCertificates) == 0 || state.PeerCertificates[0].Subject.CommonName != peerCN {
 		return false
 	}
 	for _, chain := range state.VerifiedChains {

@@ -11,8 +11,10 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/ledatu/csar-authn/internal/config"
 	"github.com/ledatu/csar-authn/internal/store"
 	"github.com/ledatu/csar-authn/internal/store/mock"
+	"github.com/ledatu/csar-core/authnconfig"
 )
 
 func seedTelegramUser(t *testing.T, st *mock.Store, userID uuid.UUID, tgID, displayName string, metadata map[string]interface{}) {
@@ -59,7 +61,7 @@ func decodeResolve(t *testing.T, rec *httptest.ResponseRecorder) browserUserReso
 }
 
 func TestResolveBrowserUsers_ByTelegramID(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	seedTelegramUser(t, st, uuid.MustParse("22222222-2222-4222-8222-222222222222"), "111", "Ivan Petrov", nil)
@@ -102,7 +104,7 @@ func TestResolveBrowserUsers_ByTelegramID(t *testing.T) {
 // Locked decision: this endpoint is reachable by any authenticated seller, so it
 // must never carry PII. Guards the response shape against a future struct edit.
 func TestResolveBrowserUsers_CarriesNoPII(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	userID := uuid.MustParse("44444444-4444-4444-8444-444444444444")
@@ -135,7 +137,7 @@ func TestResolveBrowserUsers_CarriesNoPII(t *testing.T) {
 
 // Merged accounts must resolve to the canonical user rather than the stale record.
 func TestResolveBrowserUsers_FollowsMerge(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	canonical := uuid.MustParse("66666666-6666-4666-8666-666666666666")
@@ -168,7 +170,7 @@ func TestResolveBrowserUsers_FollowsMerge(t *testing.T) {
 }
 
 func TestResolveBrowserUsers_ByAurumID(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	canonical := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -194,7 +196,7 @@ func TestResolveBrowserUsers_ByAurumID(t *testing.T) {
 	for _, u := range resp.Users {
 		byRequested[u.ProviderUserID] = u
 	}
-	if got := byRequested[canonical.String()]; got.DisplayName != "Canonical Name" || got.Provider != "aurum" || got.ID != canonical.String() {
+	if got := byRequested[canonical.String()]; got.DisplayName != "Canonical Name" || got.Provider != "subject" || got.ID != canonical.String() {
 		t.Errorf("canonical item = %+v", got)
 	}
 	// The merged id is echoed as requested but resolves to the canonical user.
@@ -216,7 +218,7 @@ func TestResolveBrowserUsers_ByAurumID(t *testing.T) {
 }
 
 func TestResolveBrowserUsers_RejectsOverCapAndBadProvider(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	over := make([]string, maxBrowserUserResolveIDs+1)
@@ -240,7 +242,7 @@ func TestResolveBrowserUsers_RejectsOverCapAndBadProvider(t *testing.T) {
 }
 
 func TestResolveBrowserUsers_EmptyInputReturnsEmptyArray(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	rec := postBrowser(t, h, token, "/auth/users/resolve", browserUserResolveRequest{
@@ -256,7 +258,7 @@ func TestResolveBrowserUsers_EmptyInputReturnsEmptyArray(t *testing.T) {
 }
 
 func TestResolveBrowserUsers_RequiresSession(t *testing.T) {
-	h, _, _ := newSessionsHandler(t, nil)
+	h, _, _ := newDirectoryHandler(t)
 
 	req := httptest.NewRequest(http.MethodPost, "/auth/users/resolve", bytes.NewReader([]byte(`{"provider":"telegram","ids":["1"]}`)))
 	rec := httptest.NewRecorder()
@@ -268,14 +270,14 @@ func TestResolveBrowserUsers_RequiresSession(t *testing.T) {
 }
 
 func TestLookupBrowserUser(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
 
 	userID := uuid.MustParse("99999999-9999-4999-8999-999999999999")
 	seedTelegramUser(t, st, userID, "12345", "Lookup Target", nil)
 
 	t.Run("by telegram id", func(t *testing.T) {
-		rec := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: "12345"})
+		rec := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: "12345", Provider: "telegram"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
@@ -289,7 +291,7 @@ func TestLookupBrowserUser(t *testing.T) {
 	})
 
 	t.Run("by uuid returns the telegram link", func(t *testing.T) {
-		rec := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: userID.String()})
+		rec := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: userID.String(), Projection: "legacy-member"})
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, want 200 (body %s)", rec.Code, rec.Body.String())
 		}
@@ -332,7 +334,7 @@ func TestLookupBrowserUser(t *testing.T) {
 // change that field, or aurumskynet-campaigns' profiles map stops matching and
 // member cards silently render blank.
 func TestResolveServiceUsers_EchoesRequestedIDAcrossMerge(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 
 	canonical := uuid.MustParse("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
 	merged := uuid.MustParse("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
@@ -366,7 +368,7 @@ func TestResolveServiceUsers_EchoesRequestedIDAcrossMerge(t *testing.T) {
 // The /svc response shape is decoded into a fixed struct by
 // aurumskynet-campaigns; it must not grow browser-only fields.
 func TestResolveServiceUsers_ShapeUnchanged(t *testing.T) {
-	h, st, _ := newSessionsHandler(t, nil)
+	h, st, _ := newDirectoryHandler(t)
 
 	userID := uuid.MustParse("cccccccc-cccc-4ccc-8ccc-cccccccccccc")
 	seedTelegramUser(t, st, userID, "777", "Svc User", map[string]interface{}{"legacy_username": "svcuser"})
@@ -389,5 +391,38 @@ func TestResolveServiceUsers_ShapeUnchanged(t *testing.T) {
 		if _, present := raw.Users[0][unexpected]; present {
 			t.Errorf("svc response gained field %q, which its consumers do not expect", unexpected)
 		}
+	}
+}
+
+func newDirectoryHandler(t *testing.T) (*Handler, *mock.Store, *config.Config) {
+	h, st, _ := newSessionsHandler(t, nil)
+	cfg := *h.Config()
+	cfg.BrowserDirectory = &authnconfig.BrowserDirectoryConfig{Version: 1, Providers: map[string]authnconfig.DirectoryProvider{"telegram": {IDFormat: "numeric", UsernameMetadataKey: "legacy_username"}}, Aliases: map[string]string{"aurum": "subject"}, Projections: map[string]string{"legacy-member": "telegram"}}
+	h.SetConfig(&cfg)
+	return h, st, &cfg
+}
+func TestBrowserDirectoryDefaultPrivacy(t *testing.T) {
+	h, st, _ := newSessionsHandler(t, nil)
+	token := issueSessionsBearer(t, h, st, sessionsTestUserID)
+	id := uuid.New()
+	seedTelegramUser(t, st, id, "99988", "Default subject", nil)
+	for _, provider := range []string{"telegram", "aurum", "email"} {
+		if w := postBrowser(t, h, token, "/auth/users/resolve", browserUserResolveRequest{Provider: provider, IDs: []string{"99988"}}); w.Code != 400 {
+			t.Fatal("unconfigured provider admitted", provider, w.Code)
+		}
+	}
+	w := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: id.String()})
+	if w.Code != 200 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var out browserUserLookupResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.User.Provider != "subject" || out.User.ProviderUserID != id.String() || out.User.Username != "" || bytes.Contains(w.Body.Bytes(), []byte("99988")) {
+		t.Fatal("default leaked linked identity", w.Body.String())
+	}
+	if w := postBrowser(t, h, token, "/auth/users/lookup", browserUserLookupRequest{Identifier: id.String(), Projection: "legacy-member"}); w.Code != 400 {
+		t.Fatal("unconfigured projection admitted")
 	}
 }

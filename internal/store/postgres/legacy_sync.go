@@ -72,6 +72,20 @@ func (s *Store) CreateLegacyUser(ctx context.Context, u *store.User, accounts []
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	created, err := s.createUserWithLinksTx(ctx, tx, u, accounts)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("committing legacy user: %w", err)
+	}
+	return created, nil
+}
+
+// createUserWithLinksTx is shared by legacy and generic imports; neither imports
+// contact/login authority. A provider collision rolls back the entire entry.
+func (s *Store) createUserWithLinksTx(ctx context.Context, tx pgx.Tx, u *store.User, accounts []store.OAuthAccount) (*store.User, error) {
 	created := *u
 	created.ID = uuid.New()
 	now := time.Now()
@@ -81,7 +95,7 @@ func (s *Store) CreateLegacyUser(ctx context.Context, u *store.User, accounts []
 		 VALUES ($1, $2, $3, $4)`,
 		created.ID, created.DisplayName, created.CreatedAt, created.UpdatedAt,
 	); err != nil {
-		return nil, fmt.Errorf("creating legacy user: %w", err)
+		return nil, fmt.Errorf("creating imported user: %w", err)
 	}
 	for i := range accounts {
 		if err := s.insertOAuthAccountTx(ctx, tx, &accounts[i], created.ID); err != nil {
@@ -91,8 +105,10 @@ func (s *Store) CreateLegacyUser(ctx context.Context, u *store.User, accounts []
 			return nil, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
-		return nil, fmt.Errorf("committing legacy user: %w", err)
-	}
 	return &created, nil
+}
+
+// TryIdentityImportLock shares the existing cross-replica import lock and session.
+func (s *Store) TryIdentityImportLock(ctx context.Context) (func(), bool, error) {
+	return s.TryLegacyUsersSyncLock(ctx)
 }
