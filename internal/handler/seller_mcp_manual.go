@@ -16,7 +16,7 @@ func (o *sellerOAuth) createManualToken(w http.ResponseWriter, r *http.Request) 
 	if !o.checkAPIKeyMutationOrigin(w, r) {
 		return
 	}
-	u, ok := o.sellerCredentialOwner(w, r)
+	u, ok := o.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}

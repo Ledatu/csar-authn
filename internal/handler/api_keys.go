@@ -31,26 +31,6 @@ func (h *Handler) apiKeyStore() store.APICredentialStore {
 	return keys
 }
 
-func (h *Handler) sellerCredentialOwner(w http.ResponseWriter, r *http.Request) (*store.User, bool) {
-	// Seller-issued credentials require the owner’s direct browser session.
-	if r.Header.Get("Authorization") != "" {
-		httpx.WriteError(w, csarerrors.Unauthorized("session required"))
-		return nil, false
-	}
-	sess, user, ok := h.authenticateRequest(w, r)
-	if !ok || sess == nil {
-		if ok {
-			httpx.WriteError(w, csarerrors.Unauthorized("session required"))
-		}
-		return nil, false
-	}
-	if sess.ImpersonatorUserID != nil {
-		httpx.WriteError(w, csarerrors.Forbidden("seller credentials require the owner session"))
-		return nil, false
-	}
-	return user, true
-}
-
 func apiKeyMutationOriginAllowed(origin string) bool {
 	switch origin {
 	case "https://seller.aurum-sky.net", "https://dev-seller.aurum-sky.net:3005":
@@ -74,7 +54,7 @@ func validWBSellerID(s string) bool {
 }
 
 func (h *Handler) handleListAPIKeys(w http.ResponseWriter, r *http.Request) {
-	user, ok := h.sellerCredentialOwner(w, r)
+	user, ok := h.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -96,7 +76,7 @@ func (h *Handler) handleCreateAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAPIKeyMutationOrigin(w, r) {
 		return
 	}
-	user, ok := h.sellerCredentialOwner(w, r)
+	user, ok := h.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -234,7 +214,7 @@ func (h *Handler) handleRevokeAPIKey(w http.ResponseWriter, r *http.Request) {
 	if !h.checkAPIKeyMutationOrigin(w, r) {
 		return
 	}
-	user, ok := h.sellerCredentialOwner(w, r)
+	user, ok := h.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}

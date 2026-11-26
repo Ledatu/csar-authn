@@ -46,15 +46,15 @@ func TestMCPClientMetadataNegotiation(t *testing.T) {
 	if err != nil || c.AuthMethod != "none" || len(c.GrantTypes) != 2 || len(c.ResponseTypes) != 1 {
 		t.Fatal("mutual capability selection failed", err)
 	}
-	if !dynamicMCPRedirectAllowed(c, "http://127.0.0.1:4999/callback") || dynamicMCPRedirectAllowed(c, "http://127.0.0.2:4999/callback") || dynamicMCPRedirectAllowed(c, "https://client.example/callback/") {
+	if !publicOAuthRedirectAllowed(c, "http://127.0.0.1:4999/callback") || publicOAuthRedirectAllowed(c, "http://127.0.0.2:4999/callback") || publicOAuthRedirectAllowed(c, "https://client.example/callback/") {
 		t.Fatal("callback binding or loopback-port rule failed")
 	}
 	c.RedirectURIs = []string{"http://localhost:4000/callback?source=native"}
-	if dynamicMCPRedirectAllowed(c, "http://localhost:4999/callback?source=native") {
+	if publicOAuthRedirectAllowed(c, "http://localhost:4999/callback?source=native") {
 		t.Fatal("non-native localhost port changed")
 	}
 	c.ApplicationType = "native"
-	if !dynamicMCPRedirectAllowed(c, "http://localhost:4999/callback?source=native") || dynamicMCPRedirectAllowed(c, "http://localhost:4999/callback?source=other") {
+	if !publicOAuthRedirectAllowed(c, "http://localhost:4999/callback?source=native") || publicOAuthRedirectAllowed(c, "http://localhost:4999/callback?source=other") {
 		t.Fatal("native callback path/query binding failed")
 	}
 	for _, mutation := range []func(){

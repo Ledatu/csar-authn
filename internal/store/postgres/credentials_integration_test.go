@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -496,4 +497,180 @@ func TestGenericLifecycleAuditFailureRollsBackEveryAuthority(t *testing.T) {
 		t.Fatal("retry failed to revoke replayed family", err)
 	}
 	assertMissingSecret(t, s, nextAccess)
+}
+
+func TestGenericAuthorizationCapacitySerializesAcrossReplicas(t *testing.T) {
+	s := auditFixture(t)
+	_, _, r, _ := genericOAuth(t, s)
+	for range 30 {
+		next := r
+		next.ID = uuid.NewString()
+		next.BrowserHash = genericHash()
+		if err := s.BeginCredentialAuthorization(t.Context(), next); err != nil {
+			t.Fatal(err)
+		}
+	}
+	start, results := make(chan struct{}), make(chan error, 2)
+	for range 2 {
+		go func() {
+			<-start
+			next := r
+			next.ID = uuid.NewString()
+			next.BrowserHash = genericHash()
+			results <- s.BeginCredentialAuthorization(t.Context(), next)
+		}()
+	}
+	close(start)
+	successes := 0
+	for range 2 {
+		err := <-results
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, store.ErrCredentialRequestLimit) {
+			t.Fatal(err)
+		}
+	}
+	if successes != 1 {
+		t.Fatal("pending request capacity raced", successes)
+	}
+	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE credential_authorization_requests DISABLE TRIGGER credential_request_authority`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `UPDATE credential_authorization_requests SET created_at=now()-interval '2 minutes',expires_at=now()-interval '1 minute' WHERE id=$1`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	next := r
+	next.ID = uuid.NewString()
+	if err := s.BeginCredentialAuthorization(t.Context(), next); err != nil {
+		t.Fatal("expired pending state did not release bounded capacity", err)
+	}
+	if _, err := s.CredentialAuthorization(t.Context(), r.ID, r.BrowserHash); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("expired browser request was restored", err)
+	}
+}
+
+func TestGenericResourceIssueIsOwnerBoundAndAudited(t *testing.T) {
+	s := auditFixture(t)
+	g, c := genericGrant(t, s, caller.APIKey)
+	_ = createGeneric(t, s, &g, c)
+	x := genericSecret(&g, store.SecretResource, time.Now().Add(time.Minute))
+	x.Resource = &g.Constraints.Selection.Resources[0]
+	if err := s.IssueCredentialResource(t.Context(), uuid.New(), g.ID, x); !errors.Is(err, store.ErrNotFound) {
+		t.Fatal("foreign owner minted resource", err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE csar_audit_outbox ADD CONSTRAINT reject_resource CHECK(convert_from(payload,'UTF8')::jsonb->>'action'<>'credentials.resource.issue') NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueCredentialResource(t.Context(), g.OwnerID, g.ID, x); err == nil {
+		t.Fatal("resource committed without audit")
+	}
+	assertMissingSecret(t, s, x)
+	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE csar_audit_outbox DROP CONSTRAINT reject_resource`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.IssueCredentialResource(t.Context(), g.OwnerID, g.ID, x); err != nil {
+		t.Fatal(err)
+	}
+	state, err := s.FindCredentialSecret(t.Context(), x.TokenHash, x.Purpose, 1)
+	if err != nil || state.CallerKind != caller.Agent {
+		t.Fatal("authoritative caller kind unavailable", err)
+	}
+}
+
+func TestGenericExpiredApprovalDoesNotDeadlockAnonymousAdmission(t *testing.T) {
+	s := auditFixture(t)
+	g, c, r, code := genericOAuth(t, s)
+	r.ID = uuid.NewString()
+	r.CreatedAt = time.Now().UTC()
+	r.ExpiresAt = r.CreatedAt.Add(2 * time.Second)
+	code.ExpiresAt = r.ExpiresAt
+	if err := s.BeginCredentialAuthorization(t.Context(), r); err != nil {
+		t.Fatal(err)
+	}
+	blocker, err := s.pool.Begin(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = blocker.Rollback(context.Background()) }()
+	if _, err := blocker.Exec(t.Context(), `LOCK TABLE csar_audit_outbox IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	approved := make(chan error, 1)
+	go func() { approved <- s.ApproveCredentialAuthorization(t.Context(), r.ID, r.BrowserHash, &g, code, c) }()
+	// The real approval owns the request row while its durable audit insert waits.
+	deadline := time.Now().Add(time.Second)
+	for {
+		var waiting bool
+		if err := s.pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM pg_locks WHERE relation='csar_audit_outbox'::regclass AND NOT granted)`).Scan(&waiting); err != nil {
+			t.Fatal(err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("approval did not reach audit barrier")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if delay := time.Until(r.ExpiresAt) + 20*time.Millisecond; delay > 0 {
+		time.Sleep(delay)
+	}
+	admitted := make(chan error, 1)
+	next := r
+	next.ID = uuid.NewString()
+	next.CreatedAt = time.Now().UTC()
+	next.ExpiresAt = next.CreatedAt.Add(time.Minute)
+	go func() { admitted <- s.BeginCredentialAuthorization(t.Context(), next) }()
+	// Let admission reach the table lock before the blocked approval proceeds.
+	time.Sleep(20 * time.Millisecond)
+	if err := blocker.Rollback(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-approved:
+		if !errors.Is(err, store.ErrNotFound) {
+			t.Fatal("expired approval escaped rollback or deadlocked", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("approval deadlocked")
+	}
+	select {
+	case err := <-admitted:
+		if err != nil {
+			t.Fatal("admission deadlocked", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("admission stuck behind request row")
+	}
+	var rows int
+	if err := s.pool.QueryRow(t.Context(), `SELECT count(*) FROM credential_grants WHERE id=$1`, g.ID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatal("expired consent created authority", err)
+	}
+}
+
+func TestGenericPendingAndApprovedClientsSurviveLegacyRegistrationCleanup(t *testing.T) {
+	s := auditFixture(t)
+	g, c, r, code := genericOAuth(t, s)
+	client := store.MCPClient{ClientID: r.ClientBinding.ClientID, ClientName: "Client", RedirectURIs: []string{r.ClientBinding.RedirectURI}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
+	if _, err := s.RegisterMCPClient(t.Context(), client, genericHash(), 4096); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.pool.Exec(t.Context(), `UPDATE seller_mcp_clients SET expires_at=now()-interval '1 second' WHERE client_id=$1`, client.ClientID); err != nil {
+		t.Fatal(err)
+	}
+	other := client
+	other.ClientID = "https://other.example.test/client"
+	if _, err := s.RegisterMCPClient(t.Context(), other, genericHash(), 4096); err != nil {
+		t.Fatal(err)
+	}
+	var exists bool
+	if err := s.pool.QueryRow(t.Context(), `SELECT EXISTS(SELECT 1 FROM seller_mcp_clients WHERE client_id=$1)`, client.ClientID).Scan(&exists); err != nil || !exists {
+		t.Fatal("pending generic authorization lost public registration", err)
+	}
+	if err := s.ApproveCredentialAuthorization(t.Context(), r.ID, r.BrowserHash, &g, code, c); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.MCPClient(t.Context(), client.ClientID); err != nil {
+		t.Fatal("approved generic client remained an expired lease", err)
+	}
 }

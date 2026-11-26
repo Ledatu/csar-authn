@@ -8,9 +8,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
-	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -31,8 +29,6 @@ const sellerOrigin = "https://seller.aurum-sky.net"
 const oauthAPI = "https://api.aurum-sky.net/oauth/mcp"
 const sellerRouterCN = "aurum-api-router-client"
 const consentCookie = "__Host-aurum-mcp-consent"
-
-var verifierPattern = regexp.MustCompile(`^[A-Za-z0-9._~-]{43,128}$`)
 
 type sellerOAuth struct {
 	*Handler
@@ -122,30 +118,6 @@ func validMCPResource(resource string) bool {
 	return resource == mcpResource || resource == mcpResource+"/"
 }
 
-func validMCPRedirect(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.Fragment != "" || u.Opaque != "" || strings.ContainsAny(raw, "*#") || strings.HasSuffix(u.Host, ":") {
-		return false
-	}
-	query, err := url.ParseQuery(u.RawQuery)
-	if err != nil || !uniqueParams(query) {
-		return false
-	}
-	for _, reserved := range []string{"code", "state", "iss", "error", "error_description", "error_uri"} {
-		if query.Has(reserved) {
-			return false
-		}
-	}
-	if u.Port() != "" {
-		port, err := strconv.Atoi(u.Port())
-		if err != nil || port < 1 || port > 65535 {
-			return false
-		}
-	}
-	loopback := u.Hostname() == "127.0.0.1" || u.Hostname() == "::1" || u.Hostname() == "localhost"
-	return u.Scheme == "https" || (u.Scheme == "http" && loopback)
-}
-
 func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
 	metadata := map[string]any{
 		"issuer":                                         mcpIssuer,
@@ -167,14 +139,6 @@ func (o *sellerOAuth) metadata(w http.ResponseWriter, _ *http.Request) {
 func oauthError(w http.ResponseWriter, status int, code string) {
 	w.Header().Set("Cache-Control", "no-store")
 	httpx.WriteJSON(w, status, map[string]string{"error": code})
-}
-func uniqueParams(v url.Values) bool {
-	for _, vs := range v {
-		if len(vs) != 1 {
-			return false
-		}
-	}
-	return true
 }
 
 func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +171,7 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 			o.clientError(w, err)
 			return
 		}
-		if !dynamicMCPRedirectAllowed(client, redirect) {
+		if !publicOAuthRedirectAllowed(client, redirect) {
 			oauthError(w, 400, "invalid_request")
 			return
 		}
@@ -230,7 +194,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 403, "access_denied")
 		return
 	}
-	user, ok := o.sellerCredentialOwner(w, r)
+	user, ok := o.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -281,7 +245,7 @@ func (o *sellerOAuth) consent(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
-	if errors.Is(err, store.ErrNotFound) || err == nil && (!validMCPRedirect(binding.RedirectURI) || o.dynamic == nil && !o.clients.allows(in.Client, binding.RedirectURI)) {
+	if errors.Is(err, store.ErrNotFound) || err == nil && (!validOAuthRedirect(binding.RedirectURI) || o.dynamic == nil && !o.clients.allows(in.Client, binding.RedirectURI)) {
 		oauthError(w, 400, "invalid_request")
 		return
 	}
@@ -358,7 +322,7 @@ func (o *sellerOAuth) token(w http.ResponseWriter, r *http.Request) {
 	case "authorization_code":
 		// The one-use stored code, not a mutable registry/cache, binds this exact
 		// client and callback. Refresh similarly binds the persisted client/grant.
-		if !validMCPRedirect(q.Get("redirect_uri")) || !validMCPResource(q.Get("resource")) ||
+		if !validOAuthRedirect(q.Get("redirect_uri")) || !validMCPResource(q.Get("resource")) ||
 			!verifierPattern.MatchString(q.Get("code_verifier")) || !strings.HasPrefix(q.Get("code"), "ac_") {
 			oauthError(w, 400, "invalid_grant")
 			return
@@ -509,7 +473,7 @@ func (o *sellerOAuth) introspect(w http.ResponseWriter, r *http.Request) {
 }
 func (o *sellerOAuth) connections(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	u, ok := o.sellerCredentialOwner(w, r)
+	u, ok := o.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}
@@ -525,7 +489,7 @@ func (o *sellerOAuth) revoke(w http.ResponseWriter, r *http.Request) {
 		oauthError(w, http.StatusForbidden, "access_denied")
 		return
 	}
-	u, ok := o.sellerCredentialOwner(w, r)
+	u, ok := o.directCredentialOwner(w, r)
 	if !ok {
 		return
 	}

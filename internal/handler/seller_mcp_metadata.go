@@ -78,7 +78,7 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 	}
 	seen := make(map[string]bool)
 	for _, redirect := range c.RedirectURIs {
-		if len(redirect) > 2048 || !validMCPRedirect(redirect) || seen[redirect] {
+		if len(redirect) > 2048 || !validOAuthRedirect(redirect) || seen[redirect] {
 			return c, errMCPClientMetadata
 		}
 		seen[redirect] = true
@@ -118,23 +118,4 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 	// Irrelevant metadata, logos and key material are never persisted or fetched.
 	c.IssuedAt = 0
 	return c, nil
-}
-
-func dynamicMCPRedirectAllowed(c store.MCPClient, redirect string) bool {
-	if len(redirect) > 2048 || !validMCPRedirect(redirect) {
-		return false
-	}
-	u, _ := url.Parse(redirect)
-	for _, registered := range c.RedirectURIs {
-		if registered == redirect {
-			return true
-		}
-		base, _ := url.Parse(registered)
-		nativeLocalhost := c.ApplicationType == "native" && base.Scheme == "http" && u.Scheme == "http" && base.Hostname() == "localhost" && u.Hostname() == "localhost"
-		if (loopbackIP(base) && loopbackIP(u) || nativeLocalhost) && base.Hostname() == u.Hostname() &&
-			base.EscapedPath() == u.EscapedPath() && base.RawQuery == u.RawQuery && base.ForceQuery == u.ForceQuery {
-			return true
-		}
-	}
-	return false
 }
