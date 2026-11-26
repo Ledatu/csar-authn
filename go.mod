@@ -12,7 +12,7 @@ require (
 	github.com/jackc/pgx/v5 v5.10.0
 	github.com/ledatu/csar-core v0.1.48-0.20261126204511-383061426b4b
 	github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b
-	github.com/markbates/goth v1.80.0
+	github.com/markbates/goth v1.82.0
 	github.com/redis/go-redis/v9 v9.19.0
 	go.opentelemetry.io/otel v1.47.0
 	go.opentelemetry.io/otel/trace v1.47.0
@@ -22,6 +22,7 @@ require (
 )
 
 require (
+	github.com/go-chi/chi/v5 v5.2.2 // indirect
 	github.com/go-redsync/redsync/v4 v4.16.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-multierror v1.1.1 // indirect
