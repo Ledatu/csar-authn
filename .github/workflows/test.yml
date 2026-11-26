@@ -28,7 +28,7 @@ jobs:
       CSAR_TEST_DSN: postgres://fixture:fixture-only@127.0.0.1:5432/csar_audit_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.11"
       - run: go build ./...
