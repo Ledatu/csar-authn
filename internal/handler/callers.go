@@ -18,7 +18,7 @@ func (h *Handler) callerRegistry(w http.ResponseWriter, r *http.Request, mutatio
 	if mutation && !h.checkAPIKeyMutationOrigin(w, r) {
 		return nil, nil, false
 	}
-	u, ok := h.sellerCredentialOwner(w, r)
+	u, ok := h.directCredentialOwner(w, r)
 	if !ok {
 		return nil, nil, false
 	}

@@ -60,7 +60,7 @@ func newSellerMCPRegistry(clientID, redirect string, extra []SellerMCPClient) (s
 		seen := make(map[string]bool)
 		variablePort := false
 		for _, uri := range client.RedirectURIs {
-			if len(uri) > 2048 || !validMCPRedirect(uri) || seen[uri] {
+			if len(uri) > 2048 || !validOAuthRedirect(uri) || seen[uri] {
 				return nil, errors.New("invalid seller MCP callback registration")
 			}
 			seen[uri] = true
@@ -78,13 +78,9 @@ func newSellerMCPRegistry(clientID, redirect string, extra []SellerMCPClient) (s
 	return registry, nil
 }
 
-func loopbackIP(u *url.URL) bool {
-	return u.Scheme == "http" && (u.Hostname() == "127.0.0.1" || u.Hostname() == "::1")
-}
-
 func (clients sellerMCPRegistry) allows(clientID, redirect string) bool {
 	client, ok := clients[clientID]
-	if !ok || len(redirect) > 2048 || !validMCPRedirect(redirect) {
+	if !ok || len(redirect) > 2048 || !validOAuthRedirect(redirect) {
 		return false
 	}
 	for _, registered := range client.RedirectURIs {

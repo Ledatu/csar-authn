@@ -1,3 +1,50 @@
+## Universal credential issuer and management (U05b/U07, opt-in)
+
+Core #48 supplies explicit compatible grant revisions and pure current-policy
+narrowing. Authn's receiver loader permits enabled credentials only with secure
+session cookies, verified TLS and transactional audit; startup also requires the
+live generic PG/outbox/client stores, bounded routed STS decision client and every
+configured dedicated CA/peer. All policy, cookie and TLS changes require restart.
+The existing router v2 capability/receiver gates were merged first (router #63).
+No deployed setting or route is enabled by these source changes.
+
+Generic owner routes `/auth/me/credentials` create/list keys, with GET/DELETE
+`/{grant_id}` for bounded non-secret detail and revocation. Creation requires the
+real owner's direct cookie session and exact configured Origin; impersonation,
+service bearer substitution and arbitrary family labels deny. Manual issuance is
+API-key only, so callers cannot select a larger OAuth-family cap. OAuth-family
+creation uses the browser/client/PKCE flow under `/oauth/credentials/{authorize,
+requests/{id},approve,token}`. The new browser API is JSON and returns an exact
+callback for the application adapter; public OAuth/DCR/CIMD representation and
+consumer migration remain U12 work. Existing stored public clients are reused;
+new anonymous metadata/registration admission is not implicitly activated.
+
+Dedicated `/internal/credentials/v2/introspect` enforces exact profile/namespace/
+audience/scope/purpose/resource and typed caller metadata. The complete opaque
+proof, including bounded public scope/namespace binding, is hashed; modifying
+that binding cannot resolve its immutable row. `/svc/credentials/{inspect,
+evaluate}` additionally require the configured service/operation/profile, its
+own CA/peer and live verified original owner/caller/grant context. Inspection is
+consent metadata only. Evaluation intersects consent/current policy with live
+Authz U03 results and may issue one resource proof in its outbox transaction.
+Authz is reached through Core RouterClient/STS, never a copied permission engine.
+
+All issue/refresh/use gates retain the original consent revision/deadline and
+intersect current policy; unlisted revisions/removed profiles deny. Refresh
+rotates atomically and spent-token reuse revokes the family. Public credential
+exchange replaces asserted gateway audit identity with its actual verified
+credential; trusted service calls preserve their separately verified hop/origin.
+Anonymous request admission is bounded to 32 pending/client and 4096 retained
+requests, with a 2s transaction and at most 100 expired browser rows cleaned per
+start. Approval takes write intent before the request row to avoid cleanup lock
+upgrade deadlocks. No credential, refresh-replay or audit history is purged.
+Registered handlers have 10s operation contexts; body/selectors/batches are bounded.
+
+Local PostgreSQL lifecycle, revision, two-application, scope/namespace, current
+Authz, session/origin/TLS, audit rollback, capacity and expiry-race coverage is
+required. All old issuer/consumer paths remain until verified migration. Outbound
+Telegram-ID JWT signing, Redis, production DDL/config and deployment are unchanged.
+
 # csar-authn Agent Summary
 
 ## Universal credential storage (U06, source only)
@@ -23,9 +70,9 @@ Physical owner/caller deletion with retained generic history is denied by FKs.
 
 The existing owner-serialized API-key/connection caps now count old and new
 families. Generic issuance must wait for all relevant writers/readers to converge.
-This capability adds no HTTP issuer/management route or token format; U07 must
-supply live direct-session/CSRF/impersonation guards, exact profile narrowing,
-client admission, deterministic format/purpose dispatch and current Authz checks.
+The U05b/U07 issuer above supplies direct-session/CSRF/impersonation guards,
+exact profile narrowing, deterministic format/purpose dispatch and current Authz
+checks. Public registration/metadata adapters remain consumer migration work.
 It changes no runtime enablement, Redis, production DDL/config, certificates or
 outbound Telegram-ID JWT behavior. Local disposable PostgreSQL lifecycle,
 concurrency, audit rollback and legacy migration compatibility tests cover U06;
@@ -46,7 +93,7 @@ are restart-only and rejected before reload mutation. Existing dedicated/general
 CA separation and pool-specific registration checks remain. This pins merged
 Core trust configuration but changes no certificate, key, token contract, Redis
 or deployment. Outbound Telegram-ID route-token signing is unchanged. Generic
-credential issuance remains disabled pending U07; U06 storage is implemented above.
+credential issuance is opt-in through U07 above; deployed enablement is unchanged.
 
 Dynamic onboarding also exposes owner-session `POST /oauth/mcp/tokens` for
 clients that support Bearer headers but cannot perform OAuth. It issues only

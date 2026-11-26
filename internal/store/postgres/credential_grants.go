@@ -179,7 +179,7 @@ func (s *Store) revokeCredentialOwnerTx(ctx context.Context, tx pgx.Tx, owner uu
 // A single query checks the parent, registered caller and live unmerged owner.
 // Revocation is never inferred from token shape or mutable deployment profiles.
 const credentialStateSQL = `SELECT g.id,g.schema_version,g.owner_user_id,g.caller_id,g.credential_kind,g.constraints,g.client_binding,g.label,g.created_at,g.expires_at,g.revoked_at,g.last_used_at,
- x.id,x.grant_id,x.purpose,x.format_version,x.token_hash,x.created_at,x.expires_at,x.spent_at,x.resource_ref,x.parent_secret_id
+ x.id,x.grant_id,x.purpose,x.format_version,x.token_hash,x.created_at,x.expires_at,x.spent_at,x.resource_ref,x.parent_secret_id,c.caller_kind
  FROM credential_secrets x JOIN credential_grants g ON g.id=x.grant_id
  JOIN registered_callers c ON c.id=g.caller_id AND c.owner_user_id=g.owner_user_id
  JOIN users u ON u.id=g.owner_user_id
@@ -192,7 +192,7 @@ func scanCredentialState(row pgx.Row) (store.CredentialState, error) {
 	var state store.CredentialState
 	g, x := &state.Grant, &state.Secret
 	var constraints, binding, resource []byte
-	err := row.Scan(&g.ID, &g.SchemaVersion, &g.OwnerID, &g.CallerID, &g.Kind, &constraints, &binding, &g.Label, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt, &x.ID, &x.GrantID, &x.Purpose, &x.FormatVersion, &x.TokenHash, &x.CreatedAt, &x.ExpiresAt, &x.SpentAt, &resource, &x.ParentID)
+	err := row.Scan(&g.ID, &g.SchemaVersion, &g.OwnerID, &g.CallerID, &g.Kind, &constraints, &binding, &g.Label, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt, &x.ID, &x.GrantID, &x.Purpose, &x.FormatVersion, &x.TokenHash, &x.CreatedAt, &x.ExpiresAt, &x.SpentAt, &resource, &x.ParentID, &state.CallerKind)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return state, store.ErrNotFound
 	}
@@ -230,4 +230,94 @@ func credentialNow(ctx context.Context, tx pgx.Tx) (time.Time, error) {
 	var now time.Time
 	err := tx.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&now)
 	return now, err
+}
+
+func (s *Store) GenericCredentialsReady() bool { return s.outbox != nil }
+
+const liveCredentialGrantSQL = `SELECT g.id,g.schema_version,g.owner_user_id,g.caller_id,g.credential_kind,g.constraints,g.client_binding,g.label,g.created_at,g.expires_at,g.revoked_at,g.last_used_at FROM credential_grants g JOIN registered_callers c ON c.id=g.caller_id AND c.owner_user_id=g.owner_user_id JOIN users u ON u.id=g.owner_user_id WHERE g.owner_user_id=$1 AND g.revoked_at IS NULL AND g.expires_at>clock_timestamp() AND c.revoked_at IS NULL AND u.merged_into IS NULL`
+
+func scanLiveCredentialGrant(row pgx.Row) (store.CredentialGrant, error) {
+	var g store.CredentialGrant
+	var constraints, binding []byte
+	err := row.Scan(&g.ID, &g.SchemaVersion, &g.OwnerID, &g.CallerID, &g.Kind, &constraints, &binding, &g.Label, &g.CreatedAt, &g.ExpiresAt, &g.RevokedAt, &g.LastUsedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return g, store.ErrNotFound
+	}
+	if err != nil {
+		return g, err
+	}
+	if store.DecodeCredentialJSON(constraints, &g.Constraints) != nil {
+		return g, store.ErrCredentialInvalid
+	}
+	if binding != nil {
+		g.ClientBinding = &store.CredentialClientBinding{}
+		if store.DecodeCredentialJSON(binding, g.ClientBinding) != nil {
+			return g, store.ErrCredentialInvalid
+		}
+	}
+	if g.Validate() != nil {
+		return g, store.ErrCredentialInvalid
+	}
+	return g, nil
+}
+func (s *Store) GetCredentialGrant(ctx context.Context, owner, id uuid.UUID) (store.CredentialGrant, error) {
+	return scanLiveCredentialGrant(s.pool.QueryRow(ctx, liveCredentialGrantSQL+` AND g.id=$2`, owner, id))
+}
+func (s *Store) ListCredentialGrants(ctx context.Context, owner uuid.UUID) ([]store.CredentialGrant, error) {
+	rows, err := s.pool.Query(ctx, liveCredentialGrantSQL+` AND EXISTS(SELECT 1 FROM credential_secrets x WHERE x.grant_id=g.id AND x.purpose IN ('access','refresh','authorization_code') AND x.spent_at IS NULL AND x.expires_at>clock_timestamp()) ORDER BY g.created_at DESC,g.id LIMIT $2`, owner, store.CredentialAPIKeyLimit+store.CredentialOAuthLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []store.CredentialGrant{}
+	for rows.Next() {
+		g, err := scanLiveCredentialGrant(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
+}
+
+func (s *Store) FindCredentialRefresh(ctx context.Context, hash string) (store.CredentialState, error) {
+	if !store.ValidCredentialHash(hash) {
+		return store.CredentialState{}, store.ErrCredentialInvalid
+	}
+	return scanCredentialState(s.pool.QueryRow(ctx, credentialStateSQL, hash, store.SecretRefresh, 1))
+}
+
+// Issuer-only capability: the HTTP receiver must bind verified original caller,
+// current consent/permissions and original source deadline before calling this.
+func (s *Store) IssueCredentialResource(ctx context.Context, owner, id uuid.UUID, x store.CredentialSecret) error {
+	if s.outbox == nil {
+		return store.ErrCallerAuditRequired
+	}
+	if x.GrantID != id || x.Purpose != store.SecretResource || x.ParentID != nil {
+		return store.ErrCredentialInvalid
+	}
+	return pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockCredentialOwnerTx(ctx, tx, owner); err != nil {
+			return err
+		}
+		g, err := scanLiveCredentialGrant(tx.QueryRow(ctx, liveCredentialGrantSQL+` AND g.id=$2`, owner, id))
+		if err != nil {
+			return err
+		}
+		if err := lockCredentialCallerTx(ctx, tx, owner, g.CallerID); err != nil {
+			return err
+		}
+		g, err = scanLiveCredentialGrant(tx.QueryRow(ctx, liveCredentialGrantSQL+` AND g.id=$2 FOR UPDATE OF g`, owner, id))
+		if err != nil {
+			return err
+		}
+		x.CreatedAt, err = credentialNow(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if err := insertCredentialSecretTx(ctx, tx, &g, x); err != nil {
+			return err
+		}
+		return s.enqueueCredential(ctx, tx, "credentials.resource.issue", &g, x.ID)
+	})
 }

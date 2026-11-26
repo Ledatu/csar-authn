@@ -69,7 +69,7 @@ func (s *Store) DecideMCP(ctx context.Context, request store.MCPRequest, owner u
 		if err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `UPDATE seller_mcp_clients SET approved_at=coalesce(approved_at,now()) WHERE client_id=$1`, request.ClientID); err != nil {
+		if err := approvePublicClientTx(ctx, tx, request.ClientID); err != nil {
 			return err
 		}
 		_, err = s.bindCredentialCallerTx(ctx, tx, owner, request.CallerID, request.NewCaller, caller.OAuthAccess, r.GrantID.String())

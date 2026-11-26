@@ -407,3 +407,51 @@ Local acceptance: `go build ./...`, `go test ./... -count=1`,
 `go test -race ./internal/store/... ./internal/handler -count=1`, with those
 fixture variables set. Odyssey pooler acceptance is separate and remains required
 before any operational rollout. No production migration or deployment is included.
+
+
+## Generic credential receiver (opt-in)
+
+`credentials.enabled` is absent/false by default. Enabling the source capability
+requires secure owner cookies, verified mTLS, the existing transactional audit
+outbox, configured per-feature dedicated CA/peer and a bounded `decisions` STS
+RouterClient. Deploy compatible v2 routers/coordinators/helpers before issuance;
+`csar.delegation_contract_version=2` preserves required route fields. This source
+change does not activate deployed configuration or migrate old credentials.
+
+Profiles can explicitly declare `accepted_grant_revisions: [1, 2]` alongside
+`revision: 2`. Omission accepts only the current revision. Lists contain 1–32
+unique positive revisions, include the current revision and exclude future ones.
+Acceptance is the profile owner's reviewed semantic-compatibility declaration.
+Every inspection/refresh/proof use intersects immutable consent with current
+scopes/namespaces/selection policy. Resource evaluation and proof use also require
+current Authz decisions; inspection remains consent metadata only. Expansion cannot
+widen existing consent. No stored revision or original deadline is relabeled.
+Profiles, compatible revisions, decisions, trust, cookie and TLS settings require
+restart, rejected before partial reload changes.
+
+Owner-session routes create/list generic personal API keys at
+`/auth/me/credentials`; GET/DELETE `/{grant_id}` provide details and revoke.
+Direct issuance always uses the API-key family, with its existing aggregate cap;
+OAuth-family labels cannot bypass it. Browser JSON authorization/consent and
+form-encoded code/refresh redemption live under `/oauth/credentials`. Existing
+bounded public-client registration rows are consumed through an owner adapter.
+These are generic issuer APIs; public OAuth metadata/DCR/CIMD and application UI
+wire adapters are migrated separately. Current legacy APIs remain available.
+
+The dedicated v2 introspection endpoint is
+`POST /internal/credentials/v2/introspect`. Private
+`POST /svc/credentials/inspect` returns bounded consent metadata, never a current
+permission result. `POST /svc/credentials/evaluate` checks at most 100 exact refs
+using configured Authz decision profiles through CSAR/STS, with complete correlated
+results or an unavailable error. Optional resource-proof issuance is restricted
+to one allowed ref and the verified original grant/caller/deadline. Inspection
+and evaluation each require an explicit service capability and pinned ingress.
+Proof binding is part of the complete hashed opaque token, not a caller assertion.
+
+Manual tokens are fixed-lifetime and nonrenewable; OAuth refresh cannot extend
+the original grant deadline or add current configuration authority. Public token
+exchange authenticates its own audit caller and never adopts incoming origin
+assertions. New endpoints remain disabled until configured. No production DDL,
+Redis changes, signing-key changes or deployment is included. Retain the outbound
+Telegram-ID JWT bridge and stage obsolete incoming-path retirement only after
+consumer migration and inventory.

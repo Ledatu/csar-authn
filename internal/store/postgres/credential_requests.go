@@ -6,6 +6,7 @@ import (
 	"errors"
 	"slices"
 	"strconv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/ledatu/csar-authn/internal/store"
@@ -29,16 +30,35 @@ func (s *Store) BeginCredentialAuthorization(ctx context.Context, r store.Creden
 	if err != nil {
 		return err
 	}
-	// Anonymous admission/rate limiting remains the issuer's responsibility (U07).
-	tag, err := s.pool.Exec(ctx, `WITH t AS (SELECT clock_timestamp() AS at) INSERT INTO credential_authorization_requests(id,schema_version,browser_hash,client_binding,profile_id,profile_revision,audience,scopes,namespaces,state,created_at,expires_at)
+	// Bound anonymous pending state across replicas without a new Redis key or
+	// ownership mechanism. Expired browser transactions carry no grant authority;
+	// remove at most 100 per delivery. Secret/replay history is never purged here.
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `LOCK TABLE credential_authorization_requests IN SHARE ROW EXCLUSIVE MODE`); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM credential_authorization_requests WHERE id IN (SELECT id FROM credential_authorization_requests WHERE expires_at<=clock_timestamp() LIMIT 100)`); err != nil {
+			return err
+		}
+		var total, client int
+		if err := tx.QueryRow(ctx, `SELECT count(*),count(*) FILTER(WHERE client_binding->>'client_id'=$1 AND consumed_at IS NULL AND expires_at>clock_timestamp()) FROM credential_authorization_requests`, r.ClientBinding.ClientID).Scan(&total, &client); err != nil {
+			return err
+		}
+		if total >= 4096 || client >= 32 {
+			return store.ErrCredentialRequestLimit
+		}
+		tag, err := tx.Exec(ctx, `WITH t AS (SELECT clock_timestamp() AS at) INSERT INTO credential_authorization_requests(id,schema_version,browser_hash,client_binding,profile_id,profile_revision,audience,scopes,namespaces,state,created_at,expires_at)
  SELECT $1,$2,$3,$4,$5,$6::numeric,$7,$8,$9,$10,at,least($11::timestamptz,at+interval '5 minutes') FROM t WHERE $11::timestamptz>at`, r.ID, r.SchemaVersion, r.BrowserHash, binding, r.ProfileID, strconv.FormatUint(r.ProfileRevision, 10), r.Audience, scopes, namespaces, r.State, r.ExpiresAt)
-	if err != nil {
-		return err
-	}
-	if tag.RowsAffected() != 1 {
-		return store.ErrCredentialInvalid
-	}
-	return nil
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return store.ErrCredentialInvalid
+		}
+		return nil
+	})
 }
 
 const credentialRequestSQL = `SELECT id,schema_version,browser_hash,client_binding,profile_id,profile_revision::text,audience,scopes,namespaces,state,created_at,expires_at,consumed_at FROM credential_authorization_requests WHERE id=$1 AND browser_hash=$2 AND consumed_at IS NULL AND expires_at>clock_timestamp()`
@@ -85,6 +105,12 @@ func (s *Store) ApproveCredentialAuthorization(ctx context.Context, id, browserH
 		if err := lockCredentialOwnerTx(ctx, tx, g.OwnerID); err != nil {
 			return err
 		}
+		// Acquire the write-intent table lock before the request row. Admission
+		// takes the table lock before deleting expired rows; a late lock upgrade
+		// after holding the request row can deadlock with that bounded cleanup.
+		if _, err := tx.Exec(ctx, `LOCK TABLE credential_authorization_requests IN ROW EXCLUSIVE MODE`); err != nil {
+			return err
+		}
 		request, err := scanCredentialRequest(tx.QueryRow(ctx, credentialRequestSQL+` FOR UPDATE`, id, browserHash))
 		if err != nil {
 			return err
@@ -104,6 +130,9 @@ func (s *Store) ApproveCredentialAuthorization(ctx context.Context, id, browserH
 			}
 		}
 		if err := s.createCredentialGrantTx(ctx, tx, &copyGrant, []store.CredentialSecret{code}, fresh); err != nil {
+			return err
+		}
+		if err := approvePublicClientTx(ctx, tx, request.ClientBinding.ClientID); err != nil {
 			return err
 		}
 		tag, err := tx.Exec(ctx, `UPDATE credential_authorization_requests SET consumed_at=clock_timestamp() WHERE id=$1 AND browser_hash=$2 AND consumed_at IS NULL AND expires_at>clock_timestamp()`, id, browserHash)

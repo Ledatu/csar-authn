@@ -28,6 +28,7 @@ import (
 	"github.com/ledatu/csar-core/httpx/clientx"
 	"github.com/ledatu/csar-core/logutil"
 	"github.com/ledatu/csar-core/observe"
+	"github.com/ledatu/csar-core/stsclient"
 	"github.com/ledatu/csar-core/tlsx"
 
 	"github.com/ledatu/csar-authn/internal/config"
@@ -504,6 +505,18 @@ func run(
 	}
 	if err := registerOrigin(); err != nil {
 		return err
+	}
+	// Generic credentials require the v2 delegation receiver and distributed
+	// policy capability. Activation remains an explicit configuration choice.
+	if cfg.Credentials != nil && cfg.Credentials.Enabled {
+		decisionClient, err := stsclient.NewRouterClient(&cfg.Credentials.Decisions, logger.With("component", "credential-decisions"))
+		if err != nil {
+			return fmt.Errorf("generic credential decision transport: %w", err)
+		}
+		defer decisionClient.Client.CloseIdleConnections()
+		if err := h.RegisterCredentials(mux, srv.TLSConfig(), decisionClient); err != nil {
+			return err
+		}
 	}
 	runErr := srv.Run(ctx)
 	if healthSidecar != nil {

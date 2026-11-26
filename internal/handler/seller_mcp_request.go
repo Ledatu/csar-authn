@@ -12,7 +12,7 @@ import (
 // labels are not authoritative and never become consent identity.
 func (o *sellerOAuth) requestInfo(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if _, ok := o.sellerCredentialOwner(w, r); !ok {
+	if _, ok := o.directCredentialOwner(w, r); !ok {
 		return
 	}
 	cookie, err := r.Cookie(consentCookie)

@@ -32,7 +32,8 @@ func (s *Store) RegisterMCPClient(ctx context.Context, client store.MCPClient, f
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_clients WHERE client_id IN (
  SELECT c.client_id FROM seller_mcp_clients c WHERE approved_at IS NULL AND expires_at<=now()
- AND NOT EXISTS(SELECT 1 FROM seller_mcp_requests r WHERE r.client_id=c.client_id AND r.expires_at>now()) LIMIT 100)`); err != nil {
+ AND NOT EXISTS(SELECT 1 FROM seller_mcp_requests r WHERE r.client_id=c.client_id AND r.expires_at>now())
+ AND NOT EXISTS(SELECT 1 FROM credential_authorization_requests r WHERE r.client_binding->>'client_id'=c.client_id AND r.consumed_at IS NULL AND r.expires_at>now()) LIMIT 100)`); err != nil {
 			return err
 		}
 		var stored []byte
@@ -84,4 +85,11 @@ func (s *Store) MCPRequestInfo(ctx context.Context, id, browserHash string) (sto
 		return result, store.ErrNotFound
 	}
 	return result, err
+}
+
+// Physical legacy table, generic public-client fields. Approval never replaces
+// the immutable client/redirect/refresh snapshot on an existing grant.
+func approvePublicClientTx(ctx context.Context, tx pgx.Tx, clientID string) error {
+	_, err := tx.Exec(ctx, `UPDATE seller_mcp_clients SET approved_at=coalesce(approved_at,now()) WHERE client_id=$1`, clientID)
+	return err
 }

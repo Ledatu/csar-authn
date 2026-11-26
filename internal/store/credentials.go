@@ -26,8 +26,9 @@ const CredentialOAuthLimit = MCPMaxActiveConnections
 const MaxCredentialJSONBytes = 128 << 10
 
 var (
-	ErrCredentialInvalid = errors.New("invalid credential state or binding")
-	ErrCredentialReplay  = errors.New("credential replay; family revoked")
+	ErrCredentialInvalid      = errors.New("invalid credential state or binding")
+	ErrCredentialRequestLimit = errors.New("credential authorization capacity reached")
+	ErrCredentialReplay       = errors.New("credential replay; family revoked")
 )
 
 type SecretPurpose string
@@ -74,8 +75,9 @@ type CredentialSecret struct {
 }
 
 type CredentialState struct {
-	Grant  CredentialGrant
-	Secret CredentialSecret
+	CallerKind caller.Kind
+	Grant      CredentialGrant
+	Secret     CredentialSecret
 }
 
 // CredentialUse carries exact expected authority, not authority supplied by an
@@ -111,6 +113,11 @@ type CredentialAuthorizationRequest struct {
 // Approval requires a live direct owner session at the issuer boundary (U07).
 // All credential mutations require the existing transactional audit outbox.
 type GenericCredentialStore interface {
+	GenericCredentialsReady() bool
+	FindCredentialRefresh(context.Context, string) (CredentialState, error)
+	IssueCredentialResource(context.Context, uuid.UUID, uuid.UUID, CredentialSecret) error
+	GetCredentialGrant(context.Context, uuid.UUID, uuid.UUID) (CredentialGrant, error)
+	ListCredentialGrants(context.Context, uuid.UUID) ([]CredentialGrant, error)
 	CreateCredentialGrant(context.Context, *CredentialGrant, []CredentialSecret, *Caller) error
 	FindCredentialSecret(context.Context, string, SecretPurpose, int) (CredentialState, error)
 	ExchangeCredentialSecret(context.Context, CredentialUse, []CredentialSecret) (CredentialState, error)
