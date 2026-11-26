@@ -34,28 +34,32 @@ func (u *credentialIssuer) browser(r *http.Request) (string, bool) {
 	return hashValue(value), true
 }
 
+type credentialAuthorizationInput struct {
+	credentialConsentInput
+	ClientID        string `json:"client_id"`
+	RedirectURI     string `json:"redirect_uri"`
+	Challenge       string `json:"code_challenge"`
+	ChallengeMethod string `json:"code_challenge_method"`
+	State           string `json:"state"`
+	resource        string
+}
+
 func (u *credentialIssuer) beginAuthorization(w http.ResponseWriter, r *http.Request) {
-	// Existing approved public registrations are reused. New anonymous DCR/CIMD
-	// admission is not silently enabled by this issuer; its consumer adapter follows.
 	if len(r.Header.Values("Origin")) != 1 || !slices.Contains(u.cfg.MutationOrigins, r.Header.Get("Origin")) {
 		credentialError(w, 403)
 		return
 	}
-	var in struct {
-		credentialConsentInput
-		ClientID        string `json:"client_id"`
-		RedirectURI     string `json:"redirect_uri"`
-		Challenge       string `json:"code_challenge"`
-		ChallengeMethod string `json:"code_challenge_method"`
-		State           string `json:"state"`
-	}
+	var in credentialAuthorizationInput
 	if !credentialJSON(w, r, &in) {
 		return
 	}
+	u.startAuthorization(w, r, &in, false)
+}
+func (u *credentialIssuer) startAuthorization(w http.ResponseWriter, r *http.Request, in *credentialAuthorizationInput, redirect bool) {
 	p := u.profile(in.ProfileID)
 	// At authorization start no selector has been consented yet; only requested
 	// scopes/namespaces are captured. The owner chooses the actual selector later.
-	if p == nil || !caller.ValidClientID(in.ClientID) || in.ClientID == "" || in.ChallengeMethod != "S256" {
+	if p == nil || !caller.ValidClientID(in.ClientID) || in.ClientID == "" || in.ChallengeMethod != "S256" || !authntokens.ValidScopes(in.Scopes) || !authntokens.ValidNamespaces(in.Namespaces) {
 		credentialError(w, 400)
 		return
 	}
@@ -64,18 +68,37 @@ func (u *credentialIssuer) beginAuthorization(w http.ResponseWriter, r *http.Req
 		credentialError(w, 400)
 		return
 	}
-	clients, ok := u.h.store.(store.MCPClientStore)
-	if !ok {
-		credentialError(w, 503)
+	if u.publicEnabled() {
+		if u.publicProfile(in.ProfileID) == nil || !u.trusted(r, p.TrustPolicy) {
+			credentialError(w, 403)
+			return
+		}
+		if u.clients != nil {
+			if err := u.clients.admit(r.Context(), "mcp.authorization", requestPeer(r), 600, time.Minute); err != nil {
+				publicClientError(w, err)
+				return
+			}
+		}
+	}
+	client, err := u.resolvePublicClient(r, in.ClientID, in.RedirectURI)
+	if err != nil {
+		publicClientError(w, err)
 		return
 	}
-	client, err := clients.MCPClient(r.Context(), in.ClientID)
-	if err != nil || client.ClientID != in.ClientID || client.AuthMethod != "none" || !slices.Contains(client.GrantTypes, "authorization_code") || !slices.Contains(client.ResponseTypes, "code") || !publicOAuthRedirectAllowed(client, in.RedirectURI) {
+	if client.ClientID != in.ClientID || client.AuthMethod != "none" || !slices.Contains(client.GrantTypes, "authorization_code") || !slices.Contains(client.ResponseTypes, "code") || !publicOAuthRedirectAllowed(client, in.RedirectURI) {
 		credentialError(w, 400)
 		return
 	}
 	now := time.Now().UTC()
-	request := store.CredentialAuthorizationRequest{ID: randomToken(), SchemaVersion: 1, BrowserHash: hashValue(randomToken()), ClientBinding: store.CredentialClientBinding{Version: 1, ClientID: client.ClientID, RedirectURI: in.RedirectURI, RefreshAllowed: slices.Contains(client.GrantTypes, "refresh_token"), PKCEChallenge: in.Challenge}, ProfileID: p.ID, ProfileRevision: p.Revision, Audience: p.Audience, Scopes: in.Scopes, Namespaces: in.Namespaces, State: in.State, CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
+	request := store.CredentialAuthorizationRequest{ID: "req_" + randomToken(), SchemaVersion: 1, BrowserHash: hashValue(randomToken()), ClientBinding: store.CredentialClientBinding{Version: 1, ClientID: client.ClientID, RedirectURI: in.RedirectURI, RefreshAllowed: slices.Contains(client.GrantTypes, "refresh_token"), PKCEChallenge: in.Challenge}, ProfileID: p.ID, ProfileRevision: p.Revision, Audience: p.Audience, Scopes: in.Scopes, Namespaces: in.Namespaces, State: in.State, CreatedAt: now, ExpiresAt: now.Add(5 * time.Minute)}
+	if u.publicEnabled() {
+		request.ClientBinding.Version = 2
+		request.ClientBinding.ClientName = client.ClientName
+		request.ClientBinding.Resource = in.resource
+		if request.ClientBinding.Resource == "" {
+			request.ClientBinding.Resource = p.Audience
+		}
+	}
 	if request.Validate() != nil {
 		credentialError(w, 400)
 		return
@@ -108,6 +131,10 @@ func (u *credentialIssuer) beginAuthorization(w http.ResponseWriter, r *http.Req
 	q := consent.Query()
 	q.Set("credential_request", request.ID)
 	consent.RawQuery = q.Encode()
+	if redirect {
+		http.Redirect(w, r, consent.String(), http.StatusSeeOther)
+		return
+	}
 	httpx.WriteJSON(w, 201, map[string]any{"request_id": request.ID, "consent_url": consent.String(), "expires_at": request.ExpiresAt})
 }
 func (u *credentialIssuer) authorizationInfo(w http.ResponseWriter, r *http.Request) {
@@ -122,7 +149,12 @@ func (u *credentialIssuer) authorizationInfo(w http.ResponseWriter, r *http.Requ
 		credentialError(w, 404)
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"request_id": request.ID, "profile_id": request.ProfileID, "audience": request.Audience, "scopes": request.Scopes, "namespaces": request.Namespaces, "client_id": request.ClientBinding.ClientID, "redirect_uri": request.ClientBinding.RedirectURI, "refresh_allowed": request.ClientBinding.RefreshAllowed, "expires_at": request.ExpiresAt})
+	p := u.profile(request.ProfileID)
+	if p == nil || p.Revision != request.ProfileRevision || p.Audience != request.Audience || request.ClientBinding.Version == 2 && u.publicProfile(p.ID) == nil {
+		credentialError(w, 400)
+		return
+	}
+	httpx.WriteJSON(w, 200, map[string]any{"request_id": request.ID, "profile_id": request.ProfileID, "audience": request.Audience, "scopes": request.Scopes, "namespaces": request.Namespaces, "client_id": request.ClientBinding.ClientID, "redirect_uri": request.ClientBinding.RedirectURI, "refresh_allowed": request.ClientBinding.RefreshAllowed, "expires_at": request.ExpiresAt, "client_name": request.ClientBinding.ClientName, "grant_ttl_seconds": int64(p.GrantTTL.Duration / time.Second)})
 }
 func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.Request) {
 	owner, ok := u.owner(w, r, true)
@@ -137,8 +169,9 @@ func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.R
 	var in struct {
 		credentialConsentInput
 		credentialCallerInput
-		RequestID string `json:"request_id"`
-		Label     string `json:"label"`
+		RequestID  string `json:"request_id"`
+		TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
+		Label      string `json:"label"`
 	}
 	if !credentialJSONLimit(w, r, &in, authntokens.MaxConsentResponseBytes) {
 		return
@@ -149,7 +182,7 @@ func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.R
 		return
 	}
 	p := u.profile(in.ProfileID)
-	if p == nil || p.Revision != request.ProfileRevision {
+	if p == nil || p.ID != request.ProfileID || p.Audience != request.Audience || p.Revision != request.ProfileRevision || request.ClientBinding.Version == 2 && u.publicProfile(p.ID) == nil {
 		credentialError(w, 400)
 		return
 	}
@@ -157,6 +190,18 @@ func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.R
 	if err != nil {
 		credentialError(w, 400)
 		return
+	}
+	for _, scope := range constraints.Scopes {
+		if !slices.Contains(request.Scopes, scope) {
+			credentialError(w, 400)
+			return
+		}
+	}
+	for _, namespace := range constraints.Namespaces {
+		if !slices.Contains(request.Namespaces, namespace) {
+			credentialError(w, 400)
+			return
+		}
 	}
 	if err := u.checkSelection(r, p, owner.ID.String(), &constraints); err != nil {
 		if errors.Is(err, store.ErrCredentialInvalid) {
@@ -177,11 +222,19 @@ func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.R
 	} else if in.CallerID != nil {
 		cid = *in.CallerID
 	}
-	g := store.CredentialGrant{ID: uuid.New(), SchemaVersion: 1, OwnerID: owner.ID, CallerID: cid, Kind: caller.OAuthAccess, Label: in.Label, Constraints: constraints, ClientBinding: &request.ClientBinding, ExpiresAt: time.Now().Add(p.GrantTTL.Duration)}
+	ttl := p.GrantTTL.Duration
+	if in.TTLSeconds != nil {
+		if *in.TTLSeconds < 1 || *in.TTLSeconds > int64(ttl/time.Second) {
+			credentialError(w, 400)
+			return
+		}
+		ttl = time.Duration(*in.TTLSeconds) * time.Second
+	}
+	g := store.CredentialGrant{ID: uuid.New(), SchemaVersion: 1, OwnerID: owner.ID, CallerID: cid, Kind: caller.OAuthAccess, Label: in.Label, Constraints: constraints, ClientBinding: &request.ClientBinding, ExpiresAt: time.Now().Add(ttl)}
 	raw, code := genericToken(store.SecretCode)
 	code.ID = uuid.New()
 	code.GrantID = g.ID
-	code.ExpiresAt = minTime(request.ExpiresAt, time.Now().Add(5*time.Minute))
+	code.ExpiresAt = minTime(g.ExpiresAt, minTime(request.ExpiresAt, time.Now().Add(5*time.Minute)))
 	if err := u.store.ApproveCredentialAuthorization(r.Context(), request.ID, browser, &g, code, fresh); err != nil {
 		credentialError(w, 409)
 		return
@@ -245,7 +298,11 @@ func (u *credentialIssuer) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	binding := state.Grant.ClientBinding
-	if q.Get("client_id") != binding.ClientID || q.Has("resource") && q.Get("resource") != p.Audience || q.Has("scope") && !sameCredentialScopes(q.Get("scope"), effective.Scopes) {
+	if binding.Version == 2 && (u.publicProfile(p.ID) == nil || u.publicResource(binding.Resource) == nil || u.publicResource(binding.Resource).ID != p.ID) {
+		oauthError(w, 400, "invalid_grant")
+		return
+	}
+	if q.Get("client_id") != binding.ClientID || q.Has("resource") && q.Get("resource") != p.Audience && (binding.Version != 2 || q.Get("resource") != binding.Resource) || q.Has("scope") && !sameCredentialScopes(q.Get("scope"), effective.Scopes) {
 		oauthError(w, 400, "invalid_grant")
 		return
 	}

@@ -29,19 +29,21 @@ import (
 // cfg is stored behind an atomic pointer so config changes are visible to
 // request handlers without restarting the service.
 type Handler struct {
-	routerCAs       []*routerCARegistration // startup-only dedicated ingress registration
-	store           store.Store
-	sessionMgr      *session.Manager
-	sessMgr         *session.SessionManager
-	oauthMgr        *oauth.Manager
-	passkeySvc      *passkey.Service
-	emailOTPSender  emailotp.Sender
-	stsHandler      *sts.Handler   // nil when STS is not configured
-	authzClient     *AuthzClient   // nil when authz is not configured
-	auditRecorder   audit.Recorder // nil when audit is not configured
-	legacyUsersSync *legacysync.Service
-	logger          *slog.Logger
-	cfg             atomic.Pointer[config.Config]
+	publicClients    *publicOAuthClients
+	publicRegistered sellerMCPRegistry
+	routerCAs        []*routerCARegistration // startup-only dedicated ingress registration
+	store            store.Store
+	sessionMgr       *session.Manager
+	sessMgr          *session.SessionManager
+	oauthMgr         *oauth.Manager
+	passkeySvc       *passkey.Service
+	emailOTPSender   emailotp.Sender
+	stsHandler       *sts.Handler   // nil when STS is not configured
+	authzClient      *AuthzClient   // nil when authz is not configured
+	auditRecorder    audit.Recorder // nil when audit is not configured
+	legacyUsersSync  *legacysync.Service
+	logger           *slog.Logger
+	cfg              atomic.Pointer[config.Config]
 }
 
 // New creates a Handler with all dependencies.
