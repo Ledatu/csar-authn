@@ -121,6 +121,7 @@ type GenericCredentialStore interface {
 	CreateCredentialGrant(context.Context, *CredentialGrant, []CredentialSecret, *Caller) error
 	FindCredentialSecret(context.Context, string, SecretPurpose, int) (CredentialState, error)
 	ExchangeCredentialSecret(context.Context, CredentialUse, []CredentialSecret) (CredentialState, error)
+	UseCredentialAccess(context.Context, CredentialUse, string, authntokens.ResourceRef) (CredentialState, error)
 	RevokeCredentialGrant(context.Context, uuid.UUID, uuid.UUID) error
 	BeginCredentialAuthorization(context.Context, CredentialAuthorizationRequest) error
 	CredentialAuthorization(context.Context, string, string) (CredentialAuthorizationRequest, error)

@@ -53,7 +53,7 @@ func (o *originIssuer) root(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request origincontext.RootRequest
-	if err := httpx.ReadJSON(r, &request); err != nil {
+	if err := httpx.ReadStrictJSON(r, &request); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}
@@ -75,7 +75,7 @@ func (o *originIssuer) delegate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var request origincontext.DelegateRequest
-	if err := httpx.ReadJSON(r, &request); err != nil {
+	if err := httpx.ReadStrictJSON(r, &request); err != nil {
 		httpx.WriteError(w, err)
 		return
 	}

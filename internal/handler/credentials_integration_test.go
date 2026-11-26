@@ -442,7 +442,7 @@ func genericServiceContext(t *testing.T, r *http.Request, s *store.CredentialSta
 	if err := gatewayctx.SetCaller(r.Header, service); err != nil {
 		t.Fatal(err)
 	}
-	if err := gatewayctx.SetOrigin(r.Header, &gatewayctx.Origin{OperationID: uuid.NewString(), Caller: credentialIdentity(s), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
+	if err := gatewayctx.SetOrigin(r.Header, &gatewayctx.Origin{Account: &authntokens.AccountBinding{Kind: "credential", ProfileID: s.Grant.Constraints.ProfileID, ProfileRevision: s.Grant.Constraints.ProfileRevision, Audience: s.Grant.Constraints.Audience}, OperationID: uuid.NewString(), Caller: credentialIdentity(s), ExpiresAt: time.Now().Add(time.Minute)}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -662,5 +662,59 @@ func TestManualConnectionProfileLifetimeAndSharedCapacityPG(t *testing.T) {
 	}
 	if w = f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 409 {
 		t.Fatal("personal key cap bypassed", w.Code)
+	}
+}
+
+func TestDirectResourceAccessIsReusableCurrentAndAuditedPG(t *testing.T) {
+	f := newCredentialFixture(t)
+	raw, gid := f.issue(t)
+	ref := authntokens.ResourceRef{Namespace: "workspace", ID: "north-branch"}
+	in := authntokens.DelegationRequestV2{Version: 2, Token: raw, Purpose: authntokens.AccessResource, ProfileID: "workspace", Audience: f.u.cfg.Profiles[0].Audience, Scope: "facts:read", Namespace: "workspace", Resource: &ref}
+	for range 2 {
+		w := f.send(t, "POST", "/internal/credentials/v2/introspect", in, f.u.introspect, false)
+		var out authntokens.DelegationResultV2
+		if w.Code != 200 || json.Unmarshal(w.Body.Bytes(), &out) != nil || out.ValidateFor(&in, time.Now()) != nil || out.Identity.CredentialKind != caller.APIKey || out.DelegatedToken != "" {
+			t.Fatal("direct use not bound/reusable", w.Code, w.Body.String())
+		}
+	}
+	state, err := f.st.FindCredentialSecret(t.Context(), hashValue(raw), store.SecretAccess, 1)
+	if err != nil || state.Secret.SpentAt != nil {
+		t.Fatal("reusable access consumed", err)
+	}
+	inspect := map[string]any{"version": 2, "profile_id": "workspace", "owner_id": f.owner.ID, "grant_id": gid, "scope": "facts:read"}
+	for _, mutate := range []func(*gatewayctx.Origin){func(o *gatewayctx.Origin) { o.Account = nil }, func(o *gatewayctx.Origin) { o.Account.ProfileID = "foreign" }, func(o *gatewayctx.Origin) { o.Account.Audience = "https://foreign.test" }, func(o *gatewayctx.Origin) { o.Account.ProfileRevision++ }} {
+		body, _ := json.Marshal(inspect)
+		r := httptest.NewRequest("POST", "/svc/credentials/inspect", bytes.NewReader(body))
+		r.TLS = f.tls
+		genericServiceContext(t, r, &state)
+		origin, err := gatewayctx.OriginFromHeaders(r.Header)
+		if err != nil {
+			t.Fatal(err)
+		}
+		mutate(origin)
+		if err := gatewayctx.SetOrigin(r.Header, origin); err != nil {
+			t.Fatal(err)
+		}
+		w := httptest.NewRecorder()
+		f.u.inspect(w, r)
+		if w.Code != 403 {
+			t.Fatal("foreign account binding accepted", w.Code)
+		}
+	}
+	f.deny.Store(true)
+	if w := f.send(t, "POST", "/internal/credentials/v2/introspect", in, f.u.introspect, false); strings.Contains(w.Body.String(), `"active":true`) {
+		t.Fatal("stale direct permission used")
+	}
+	f.deny.Store(false)
+	in.Purpose = authntokens.GrantResource
+	if w := f.send(t, "POST", "/internal/credentials/v2/introspect", in, f.u.introspect, false); strings.Contains(w.Body.String(), `"active":true`) {
+		t.Fatal("access fell back into proof mode")
+	}
+	in.Purpose = authntokens.AccessResource
+	if err := f.st.RevokeCredentialGrant(t.Context(), f.owner.ID, gid); err != nil {
+		t.Fatal(err)
+	}
+	if w := f.send(t, "POST", "/internal/credentials/v2/introspect", in, f.u.introspect, false); strings.Contains(w.Body.String(), `"active":true`) {
+		t.Fatal("revoked direct access used")
 	}
 }

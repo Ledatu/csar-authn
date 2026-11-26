@@ -8,6 +8,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/audit"
+	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/pgutil"
 )
 
@@ -60,23 +62,9 @@ func (s *Store) ExchangeCredentialSecret(ctx context.Context, use store.Credenti
 	}
 	replay := false
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
-		// Discover immutable lock coordinates, then acquire the common hierarchy.
-		state, err := scanCredentialState(tx.QueryRow(ctx, credentialStateSQL, use.Hash, use.Purpose, use.FormatVersion))
+		state, err := lockCredentialUseTx(ctx, tx, use)
 		if err != nil {
 			return err
-		}
-		if err := lockCredentialOwnerTx(ctx, tx, state.Grant.OwnerID); err != nil {
-			return err
-		}
-		if err := lockCredentialCallerTx(ctx, tx, state.Grant.OwnerID, state.Grant.CallerID); err != nil {
-			return err
-		}
-		state, err = scanCredentialState(tx.QueryRow(ctx, credentialStateSQL+` FOR UPDATE OF g,x`, use.Hash, use.Purpose, use.FormatVersion))
-		if err != nil {
-			return err
-		}
-		if !credentialUseMatches(use, &state) {
-			return store.ErrCredentialInvalid
 		}
 		g, x := &state.Grant, &state.Secret
 		if x.SpentAt != nil {
@@ -193,4 +181,77 @@ func validateCredentialTransition(state *store.CredentialState, next []store.Cre
 		}
 	}
 	return nil
+}
+
+// lockCredentialUseTx rechecks current owner/caller/grant/secret authority under
+// the same hierarchy for exchanges and reusable resource use.
+func lockCredentialUseTx(ctx context.Context, tx pgx.Tx, use store.CredentialUse) (store.CredentialState, error) {
+	state, err := scanCredentialState(tx.QueryRow(ctx, credentialStateSQL, use.Hash, use.Purpose, use.FormatVersion))
+	if err != nil {
+		return state, err
+	}
+	if err := lockCredentialOwnerTx(ctx, tx, state.Grant.OwnerID); err != nil {
+		return state, err
+	}
+	if err := lockCredentialCallerTx(ctx, tx, state.Grant.OwnerID, state.Grant.CallerID); err != nil {
+		return state, err
+	}
+	state, err = scanCredentialState(tx.QueryRow(ctx, credentialStateSQL+` FOR UPDATE OF g,x`, use.Hash, use.Purpose, use.FormatVersion))
+	if err != nil {
+		return state, err
+	}
+	if !credentialUseMatches(use, &state) {
+		return state, store.ErrCredentialInvalid
+	}
+	return state, nil
+}
+
+// UseCredentialAccess audits one exact resource use without changing the access
+// secret or minting a child. Current policy/Authz must additionally pass at the
+// receiver; the store independently enforces the immutable consent and live rows.
+func (s *Store) UseCredentialAccess(ctx context.Context, use store.CredentialUse, scope string, ref authntokens.ResourceRef) (store.CredentialState, error) {
+	var result store.CredentialState
+	if s.outbox == nil {
+		return result, store.ErrCallerAuditRequired
+	}
+	if use.Purpose != store.SecretAccess || !store.ValidCredentialHash(use.Hash) || use.FormatVersion != store.CredentialFormatVersion || !authntokens.ValidScope(scope) || ref.Validate() != nil {
+		return result, store.ErrCredentialInvalid
+	}
+	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		state, err := lockCredentialUseTx(ctx, tx, use)
+		if err != nil {
+			return err
+		}
+		g, x := &state.Grant, &state.Secret
+		c := &g.Constraints
+		if x.SpentAt != nil || !slices.Contains(c.Scopes, scope) || !slices.Contains(c.Namespaces, ref.Namespace) || (c.Selection.Mode == authntokens.Selected && !slices.Contains(c.Selection.Resources, ref)) {
+			return store.ErrCredentialInvalid
+		}
+		now, err := credentialNow(ctx, tx)
+		if err != nil {
+			return err
+		}
+		if !x.ExpiresAt.After(now) || !g.ExpiresAt.After(now) {
+			return store.ErrNotFound
+		}
+		if _, err := tx.Exec(ctx, `UPDATE credential_grants SET last_used_at=$2 WHERE id=$1 AND (last_used_at IS NULL OR last_used_at<$2::timestamptz-interval '1 hour')`, g.ID, now); err != nil {
+			return err
+		}
+		body, err := json.Marshal(struct {
+			Scope    string                  `json:"scope"`
+			Resource authntokens.ResourceRef `json:"resource"`
+		}{scope, ref})
+		if err != nil {
+			return err
+		}
+		if err := s.enqueueAudit(ctx, tx, &audit.Event{Actor: g.OwnerID.String(), Action: "credentials.access.use", TargetType: "credential_grant", TargetID: g.ID.String(), ScopeType: "subject", ScopeID: g.OwnerID.String(), AfterState: body}); err != nil {
+			return err
+		}
+		result = state
+		return nil
+	})
+	if err != nil {
+		return store.CredentialState{}, err
+	}
+	return result, nil
 }

@@ -674,3 +674,38 @@ func TestGenericPendingAndApprovedClientsSurviveLegacyRegistrationCleanup(t *tes
 		t.Fatal("approved generic client remained an expired lease", err)
 	}
 }
+
+func TestDirectAccessUseAuditRollbackAndConsent(t *testing.T) {
+	s := auditFixture(t)
+	g, c := genericGrant(t, s, caller.APIKey)
+	access := createGeneric(t, s, &g, c)
+	use := genericUse(&g, access)
+	ref := g.Constraints.Selection.Resources[0]
+	for range 2 {
+		if _, err := s.UseCredentialAccess(t.Context(), use, "facts:read", ref); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var count int
+	if err := s.pool.QueryRow(t.Context(), `SELECT count(*) FROM credential_secrets WHERE grant_id=$1`, g.ID).Scan(&count); err != nil || count != 1 {
+		t.Fatal("direct use minted children", count, err)
+	}
+	for _, bad := range []authntokens.ResourceRef{{Namespace: "documents", ID: "foreign"}, {Namespace: "foreign", ID: ref.ID}} {
+		if _, err := s.UseCredentialAccess(t.Context(), use, "facts:read", bad); !errors.Is(err, store.ErrCredentialInvalid) {
+			t.Fatal("outside consent used", err)
+		}
+	}
+	if _, err := s.pool.Exec(t.Context(), `ALTER TABLE csar_audit_outbox ADD CONSTRAINT reject_use CHECK(convert_from(payload,'UTF8')::jsonb->>'action'<>'credentials.access.use') NOT VALID`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UseCredentialAccess(t.Context(), use, "facts:read", ref); err == nil {
+		t.Fatal("unaudited direct use committed")
+	}
+	if _, err := s.FindCredentialSecret(t.Context(), access.TokenHash, store.SecretAccess, 1); err != nil {
+		t.Fatal("failed direct use consumed credential", err)
+	}
+	var events int
+	if err := s.pool.QueryRow(t.Context(), `SELECT count(*) FROM csar_audit_outbox WHERE convert_from(payload,'UTF8')::jsonb->>'action'='credentials.access.use'`).Scan(&events); err != nil || events != 2 {
+		t.Fatal("use audit mismatch", events, err)
+	}
+}
