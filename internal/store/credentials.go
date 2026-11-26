@@ -217,3 +217,10 @@ func (r *CredentialAuthorizationRequest) Validate() error {
 	}
 	return nil
 }
+
+// CredentialCapacity is a read-only admission hint. Mutations still check the
+// same mixed legacy/generic ceilings under the owner lock.
+type CredentialCapacity struct{ APIKeys, Connections int }
+type CredentialCapacityReader interface {
+	CredentialCapacity(context.Context, uuid.UUID) (CredentialCapacity, error)
+}

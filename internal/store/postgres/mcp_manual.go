@@ -69,8 +69,7 @@ func (s *Store) checkMCPCapacityTx(ctx context.Context, tx pgx.Tx, owner uuid.UU
 		return err
 	}
 	var count int
-	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM seller_mcp_grants WHERE owner_id=$1 AND expires_at>now()
- AND (coalesce(access_hash,session_access_hash) IS NOT NULL OR code_expires_at>now())) + (SELECT count(*) FROM credential_grants g WHERE owner_user_id=$1 AND credential_kind='oauth_access' AND revoked_at IS NULL AND expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM credential_secrets x WHERE x.grant_id=g.id AND x.purpose IN ('access','refresh','authorization_code') AND x.spent_at IS NULL AND x.expires_at>clock_timestamp()))`, owner).Scan(&count); err != nil {
+	if err := tx.QueryRow(ctx, connectionCredentialCountSQL, owner).Scan(&count); err != nil {
 		return err
 	}
 	if count >= store.MCPMaxActiveConnections {
@@ -98,3 +97,6 @@ func touchMCP(ctx context.Context, tx pgx.Tx, accessHash string) error {
  AND (last_used_at IS NULL OR last_used_at<now()-make_interval(secs=>$2))`, accessHash, time.Hour.Seconds())
 	return err
 }
+
+const connectionCredentialCountSQL = `SELECT (SELECT count(*) FROM seller_mcp_grants WHERE owner_id=$1 AND expires_at>now()
+ AND (coalesce(access_hash,session_access_hash) IS NOT NULL OR code_expires_at>now())) + (SELECT count(*) FROM credential_grants g WHERE owner_user_id=$1 AND credential_kind='oauth_access' AND revoked_at IS NULL AND expires_at>clock_timestamp() AND EXISTS(SELECT 1 FROM credential_secrets x WHERE x.grant_id=g.id AND x.purpose IN ('access','refresh','authorization_code') AND x.spent_at IS NULL AND x.expires_at>clock_timestamp()))`

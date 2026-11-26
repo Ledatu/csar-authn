@@ -1,3 +1,15 @@
+## Bounded owner consent metadata — source only
+
+GET /auth/me/credentials?view=consent returns five complete non-secret original
+consent snapshots per page, optional exact kind/profile filters and explicit
+consent-only semantics. Caller labels/kinds come from the owner registry. Owner
+capacity hints reuse the exact mutation-path SQL and mixed legacy/generic totals;
+ceilings and owner-locked admission remain unchanged. Default summary is preserved.
+Unknown/duplicate filters and oversized pages fail closed. Request-info includes
+configured access/grant bounds so the seller UI can show the deadline it requests.
+This supplies the direct generic UI migration, without a new legacy MCP adapter,
+per-grant HTTP fan-out, DDL, Redis or deployment change.
+
 ## Generic public OAuth receiver — source only
 
 Optional credentials.public_oauth enables standard metadata/GET authorization,

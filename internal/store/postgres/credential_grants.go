@@ -120,7 +120,7 @@ func checkAPICapacityTx(ctx context.Context, tx pgx.Tx, owner uuid.UUID, limit i
 	if limit < 1 || limit > store.CredentialAPIKeyLimit {
 		return store.ErrCredentialInvalid
 	}
-	if err := tx.QueryRow(ctx, `SELECT (SELECT count(*) FROM seller_api_credentials WHERE owner_user_id=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp())+(SELECT count(*) FROM credential_grants WHERE owner_user_id=$1 AND credential_kind='api_key' AND revoked_at IS NULL AND expires_at>clock_timestamp())`, owner).Scan(&count); err != nil {
+	if err := tx.QueryRow(ctx, apiCredentialCountSQL, owner).Scan(&count); err != nil {
 		return err
 	}
 	if count >= limit {
@@ -321,3 +321,5 @@ func (s *Store) IssueCredentialResource(ctx context.Context, owner, id uuid.UUID
 		return s.enqueueCredential(ctx, tx, "credentials.resource.issue", &g, x.ID)
 	})
 }
+
+const apiCredentialCountSQL = `SELECT (SELECT count(*) FROM seller_api_credentials WHERE owner_user_id=$1 AND revoked_at IS NULL AND expires_at>clock_timestamp())+(SELECT count(*) FROM credential_grants WHERE owner_user_id=$1 AND credential_kind='api_key' AND revoked_at IS NULL AND expires_at>clock_timestamp())`
