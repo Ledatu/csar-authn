@@ -431,8 +431,13 @@ restart, rejected before partial reload changes.
 
 Owner-session routes create/list generic personal API keys at
 `/auth/me/credentials`; GET/DELETE `/{grant_id}` provide details and revoke.
-Direct issuance always uses the API-key family, with its existing aggregate cap;
-OAuth-family labels cannot bypass it. Browser JSON authorization/consent and
+Direct issuance defaults to the API-key family and its five-key aggregate cap.
+An explicit profile `manual_issuance: {family: connection, max_ttl: 168h}` selects
+the shared 100-connection accounting family with no client/code/refresh authority.
+Its maximum must fit the parent grant TTL and 1–168h; `ttl_seconds` may only
+shorten it (minimum 1h for connections). Explicit API-key maxima are positive
+whole seconds within grant TTL. Body `kind` is only a compatibility assertion,
+never the family selector. Omission preserves existing API-key lifetime behavior. Browser JSON authorization/consent and
 form-encoded code/refresh redemption live under `/oauth/credentials`. Existing
 bounded public-client registration rows are consumed through an owner adapter.
 These are generic issuer APIs; public OAuth metadata/DCR/CIMD and application UI

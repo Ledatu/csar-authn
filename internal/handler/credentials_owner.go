@@ -62,8 +62,9 @@ func (u *credentialIssuer) create(w http.ResponseWriter, r *http.Request) {
 	var in struct {
 		credentialConsentInput
 		credentialCallerInput
-		Label string                `json:"label"`
-		Kind  caller.CredentialKind `json:"kind"`
+		Label      string                `json:"label"`
+		Kind       caller.CredentialKind `json:"kind"`
+		TTLSeconds *int64                `json:"ttl_seconds,omitempty"`
 	}
 	if !credentialJSONLimit(w, r, &in, authntokens.MaxConsentResponseBytes) {
 		return
@@ -74,12 +75,28 @@ func (u *credentialIssuer) create(w http.ResponseWriter, r *http.Request) {
 		credentialError(w, 400)
 		return
 	}
-	if in.Kind == "" {
-		in.Kind = caller.APIKey
+	// Kind is a compatibility assertion only. The trusted profile fixes the
+	// immutable cap family; omitting a client cannot add OAuth/refresh authority.
+	kind := caller.APIKey
+	ttl := min(p.GrantTTL.Duration, p.AccessTTL.Duration)
+	minimum := time.Second
+	if m := p.ManualIssuance; m != nil {
+		ttl = m.MaxTTL.Duration
+		if m.Family == "connection" {
+			kind = caller.OAuthAccess
+			minimum = time.Hour
+		}
 	}
-	if in.Kind != caller.APIKey {
+	if in.Kind != "" && in.Kind != kind {
 		credentialError(w, 400)
 		return
+	}
+	if in.TTLSeconds != nil {
+		if *in.TTLSeconds < int64(minimum/time.Second) || *in.TTLSeconds > int64(ttl/time.Second) {
+			credentialError(w, 400)
+			return
+		}
+		ttl = time.Duration(*in.TTLSeconds) * time.Second
 	}
 	if err := u.checkSelection(r, p, owner.ID.String(), &constraints); err != nil {
 		if errors.Is(err, store.ErrCredentialInvalid) {
@@ -100,11 +117,11 @@ func (u *credentialIssuer) create(w http.ResponseWriter, r *http.Request) {
 	} else if in.CallerID != nil {
 		cid = *in.CallerID
 	}
-	g := store.CredentialGrant{ID: uuid.New(), SchemaVersion: 1, OwnerID: owner.ID, CallerID: cid, Kind: in.Kind, Constraints: constraints, Label: in.Label, ExpiresAt: time.Now().Add(min(p.GrantTTL.Duration, p.AccessTTL.Duration))}
+	g := store.CredentialGrant{ID: uuid.New(), SchemaVersion: 1, OwnerID: owner.ID, CallerID: cid, Kind: kind, Constraints: constraints, Label: in.Label, ExpiresAt: time.Now().Add(ttl)}
 	raw, x := genericToken(store.SecretAccess)
 	x.ID = uuid.New()
 	x.GrantID = g.ID
-	x.ExpiresAt = minTime(g.ExpiresAt, time.Now().Add(p.AccessTTL.Duration))
+	x.ExpiresAt = g.ExpiresAt
 	if err := u.store.CreateCredentialGrant(r.Context(), &g, []store.CredentialSecret{x}, fresh); err != nil {
 		credentialError(w, 409)
 		return

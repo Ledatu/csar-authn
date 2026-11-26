@@ -11,8 +11,11 @@ No deployed setting or route is enabled by these source changes.
 Generic owner routes `/auth/me/credentials` create/list keys, with GET/DELETE
 `/{grant_id}` for bounded non-secret detail and revocation. Creation requires the
 real owner's direct cookie session and exact configured Origin; impersonation,
-service bearer substitution and arbitrary family labels deny. Manual issuance is
-API-key only, so callers cannot select a larger OAuth-family cap. OAuth-family
+service bearer substitution and arbitrary family labels deny. Manual issuance defaults to
+API keys. Explicit profile `manual_issuance` can select the connection accounting
+family and a fixed maximum (1–168h), sharing the existing old+new 100-connection
+cap. The optional `ttl_seconds` only shortens it; body kind cannot select a family.
+No client/code/refresh authority is created. OAuth-family
 creation uses the browser/client/PKCE flow under `/oauth/credentials/{authorize,
 requests/{id},approve,token}`. The new browser API is JSON and returns an exact
 callback for the application adapter; public OAuth/DCR/CIMD representation and
