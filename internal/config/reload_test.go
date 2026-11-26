@@ -175,3 +175,17 @@ func TestIdentityPolicyRequiresRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestStandaloneImporterTLSRequiresRestart(t *testing.T) {
+	startup := &Config{IdentityImport: &authnconfig.IdentityImportConfig{Version: 1, Enabled: true}}
+	next := *startup
+	next.TLS.ClientCAFile = "different-client-ca"
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("standalone importer TLS changed on reload")
+	}
+	next = *startup
+	next.Cookie.Name = "different-session"
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("standalone importer session changed on reload")
+	}
+}

@@ -9,8 +9,10 @@ import (
 // Call it before applying any part of a new configuration. The startup config
 // remains the comparison baseline even after successful partial reloads.
 func ValidateReload(startup, next *Config) error {
-	if startup.Credentials != nil && startup.Credentials.Enabled && (!reflect.DeepEqual(startup.Cookie, next.Cookie) || !reflect.DeepEqual(startup.TLS, next.TLS)) {
-		return errors.New("credential session and TLS settings require a restart")
+	credentialEnabled := startup.Credentials != nil && startup.Credentials.Enabled
+	importEnabled := startup.IdentityImport != nil && startup.IdentityImport.Enabled
+	if (credentialEnabled || importEnabled) && (!reflect.DeepEqual(startup.Cookie, next.Cookie) || !reflect.DeepEqual(startup.TLS, next.TLS)) {
+		return errors.New("credential/import session and TLS settings require a restart")
 	}
 	if !reflect.DeepEqual(startup.BrowserDirectory, next.BrowserDirectory) || !reflect.DeepEqual(startup.IdentityImport, next.IdentityImport) {
 		return errors.New("directory and identity import policy require a restart")
