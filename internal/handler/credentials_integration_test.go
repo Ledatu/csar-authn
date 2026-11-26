@@ -319,8 +319,8 @@ func TestGenericIssuerProofPurposeNamespaceAndReplayPG(t *testing.T) {
 }
 func TestGenericOAuthConsentRotationAndReplayPG(t *testing.T) {
 	f := newCredentialFixture(t)
-	client := store.MCPClient{ClientID: "https://client.example.test/id", ClientName: "Client", RedirectURIs: []string{"https://client.example.test/callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
-	if _, err := f.st.RegisterMCPClient(t.Context(), client, strings.Repeat("a", 64), 4096); err != nil {
+	client := store.OAuthClient{ClientID: "https://client.example.test/id", ClientName: "Client", RedirectURIs: []string{"https://client.example.test/callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
+	if _, err := f.st.RegisterOAuthClient(t.Context(), client, strings.Repeat("a", 64), 4096); err != nil {
 		t.Fatal(err)
 	}
 	verifier := strings.Repeat("A", 43)
@@ -638,7 +638,7 @@ func TestManualConnectionProfileLifetimeAndSharedCapacityPG(t *testing.T) {
 	}
 	// The same owner cap includes one old-format manual connection and all generic
 	// manual grants. Reusing its caller cannot create a second cap or registry entry.
-	_, err = f.st.CreateManualMCP(t.Context(), store.MCPManualToken{OwnerID: f.owner.ID, CallerID: &state.Grant.CallerID, Selection: store.MCPSelection{AllCampaigns: true}, AccessHash: hashValue("legacy-manual-fixture"), Hours: 1})
+	_, err = f.st.Pool().Exec(t.Context(), `INSERT INTO seller_mcp_grants(owner_id,client_id,redirect_uri,challenge,code_expires_at,access_hash,expires_at,all_campaigns) VALUES($1,'','','',now(),$2,now()+interval '1 hour',true)`, f.owner.ID, hashValue("legacy-manual-fixture"))
 	if err != nil {
 		t.Fatal(err)
 	}

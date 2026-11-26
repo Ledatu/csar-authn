@@ -224,7 +224,7 @@ func TestPublicOAuthDCRSharesProtectedAdmissionPG(t *testing.T) {
 	if first.Code != 201 {
 		t.Fatal(first.Code, first.Body)
 	}
-	var out store.MCPClient
+	var out store.OAuthClient
 	if json.Unmarshal(first.Body.Bytes(), &out) != nil || !strings.HasPrefix(out.ClientID, "dcr_") {
 		t.Fatal("DCR missing")
 	}

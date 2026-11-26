@@ -42,7 +42,7 @@ func uniqueParams(v url.Values) bool {
 	return true
 }
 
-func publicOAuthRedirectAllowed(c store.MCPClient, redirect string) bool {
+func publicOAuthRedirectAllowed(c store.OAuthClient, redirect string) bool {
 	if len(redirect) > 2048 || !validOAuthRedirect(redirect) {
 		return false
 	}

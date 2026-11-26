@@ -350,31 +350,23 @@ for fail-closed rollback. Finish upgrading all introspection replicas before
 enabling the new scope choice. The Advertising scope also has its own route
 policy and cannot be substituted by a saved-settings or Analytics key.
 
-### Additional hosted MCP public registrations
+### Retired MCP issuer
 
-Keep the existing primary MCP_OAUTH_CLIENT_ID and MCP_OAUTH_REDIRECT_URI pair.
-MCP_OAUTH_CLIENTS optionally supplies a JSON array of additional public clients:
+The application-specific MCP OAuth/manual/discovery/proof endpoints and static
+client catalogue are removed. Configure the generic credential profiles and
+`credentials.public_oauth` explicitly. Retired enabling/catalogue environment
+settings fail startup; remove them only during a separately approved rollout.
+`MCP_OAUTH_REDIS_ADDR` and `MCP_OAUTH_REDIS_PASSWORD` remain connection aliases
+with the same pool, fallback, quotas and Redis identities.
 
-```json
-[{"client_id":"cursor","redirect_uris":["http://localhost:8787/callback","https://www.cursor.com/agents/mcp/oauth/callback"]}]
-```
+Existing personal API keys keep their reader, list/revoke, scopes and fixed
+expiry. No key reissue, revocation, historical row rewrite or production activation
+is included. Historical MCP rows still count toward the same owner cap and are
+cleaned up by caller revocation; their retired protocol cannot be used.
 
-Use explicit callbacks from the client vendor. No client secret or dynamic
-registration is introduced. allow_loopback_port is an optional per-client boolean
-for native clients that choose an ephemeral port: it requires a portless HTTP
-127.0.0.1 or ::1 callback entry, varies only the numeric port, and preserves host
-and escaped path. Register an empty/root path separately when the client uses
-both spellings. The exact callback requested at authorization is persisted and
-required unchanged at code redemption; the port is never generalized in storage.
-All registration settings require a restart. The gateway's platform-admin beta
-policy, Analytics scope, consent, selected stores and revocation still apply.
-
-Run local PostgreSQL lifecycle acceptance with MCP_TEST_DATABASE_URL pointing to
-127.0.0.1/csar_mcp_test. The lifecycle suite exercises each registered surface,
-cross-client consent/code/refresh failures, exact callback binding, PKCE, code
-replay, expiry, refresh rotation/reuse and revocation. Synthetic identity/Authz
-fixtures do not constitute native production-client acceptance.
-
+Run generic lifecycle acceptance with `AUDIT_TEST_DATABASE_URL` pointing to the
+disposable localhost `csar_audit_test` fixture. Native client/rollout acceptance
+remains separate from protocol fixtures.
 
 ## Universal credential storage (source only)
 

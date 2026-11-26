@@ -22,7 +22,7 @@ type routerCARegistration struct {
 // registerRouterCA is startup-only. Dedicated gateway ingress may share a CA
 // between issuer features but must never inherit the general service trust root.
 func (h *Handler) registerRouterCA(file string, listener *tls.Config) (*x509.Certificate, error) {
-	return h.registerRouterTrust(file, sellerRouterCN, listener)
+	return h.registerRouterTrust(file, legacyOriginRouterCN, listener)
 }
 
 func (h *Handler) registerRouterTrust(file, peerCN string, listener *tls.Config) (*x509.Certificate, error) {
@@ -72,7 +72,7 @@ func (h *Handler) registerRouterTrust(file, peerCN string, listener *tls.Config)
 }
 
 func verifiedRouterCA(state *tls.ConnectionState, ca *x509.Certificate) bool {
-	return verifiedRouterTrust(state, ca, sellerRouterCN)
+	return verifiedRouterTrust(state, ca, legacyOriginRouterCN)
 }
 
 func verifiedRouterTrust(state *tls.ConnectionState, ca *x509.Certificate, peerCN string) bool {

@@ -84,6 +84,9 @@ func run(
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	if err := rejectRetiredMCPSettings(); err != nil {
+		return err
+	}
 	logger.Info("config loaded",
 		"listen_addr", cfg.ListenAddr,
 		"database_driver", cfg.Database.Driver,
@@ -457,41 +460,21 @@ func run(
 		return fmt.Errorf("creating server: %w", err)
 	}
 
-	additionalMCPClients, err := handler.ParseSellerMCPClients(os.Getenv("MCP_OAUTH_CLIENTS"))
-	if err != nil {
-		return err
-	}
-	if id, redirect := os.Getenv("MCP_OAUTH_CLIENT_ID"), os.Getenv("MCP_OAUTH_REDIRECT_URI"); id != "" || redirect != "" {
-		additionalMCPClients = append(additionalMCPClients, handler.SellerMCPClient{ClientID: id, RedirectURIs: []string{redirect}})
-	}
-	dynamicMCP, err := optionalBoolEnv("MCP_OAUTH_DYNAMIC_CLIENTS", false)
-	if err != nil {
-		return err
-	}
-	mcpEnabled, err := optionalBoolEnv("MCP_OAUTH_ENABLED", dynamicMCP || len(additionalMCPClients) > 0)
-	if err != nil {
-		return err
-	}
-	var mcpRedis *redis.Client
+	var publicRedis *redis.Client
 	var metadataClient *http.Client
 	publicDynamic := cfg.Credentials != nil && cfg.Credentials.Enabled && cfg.Credentials.PublicOAuth != nil && cfg.Credentials.PublicOAuth.Enabled && cfg.Credentials.PublicOAuth.DynamicClients
-	if dynamicMCP || publicDynamic {
-		options, err := sellerMCPRedisOptions(cfg)
+	if publicDynamic {
+		options, err := publicOAuthRedisOptions(cfg)
 		if err != nil {
 			return err
 		}
-		mcpRedis = redis.NewClient(options)
-		defer func() { _ = mcpRedis.Close() }()
-		if err := mcpRedis.Ping(ctx).Err(); err != nil {
-			return fmt.Errorf("MCP onboarding Redis unavailable")
+		publicRedis = redis.NewClient(options)
+		defer func() { _ = publicRedis.Close() }()
+		if err := publicRedis.Ping(ctx).Err(); err != nil {
+			return fmt.Errorf("public OAuth admission Redis unavailable")
 		}
 		metadataClient = clientx.NewPublicHTTPClient(3 * time.Second)
 		defer metadataClient.CloseIdleConnections()
-	}
-	if err := h.RegisterSellerMCPWithOptions(mux, handler.SellerMCPOAuthOptions{Enabled: mcpEnabled, Dynamic: dynamicMCP,
-		Clients: additionalMCPClients, RouterCAFile: os.Getenv("MCP_ROUTER_CA_FILE"), Listener: srv.TLSConfig(),
-		Redis: mcpRedis, HTTPClient: metadataClient}); err != nil {
-		return err
 	}
 
 	originCAFile := os.Getenv("ORIGIN_ROUTER_CA_FILE")
@@ -515,7 +498,7 @@ func run(
 			return fmt.Errorf("generic credential decision transport: %w", err)
 		}
 		defer decisionClient.Client.CloseIdleConnections()
-		if err := h.RegisterCredentials(mux, srv.TLSConfig(), decisionClient, handler.PublicOAuthDependencies{Redis: mcpRedis, HTTPClient: metadataClient}); err != nil {
+		if err := h.RegisterCredentials(mux, srv.TLSConfig(), decisionClient, handler.PublicOAuthDependencies{Redis: publicRedis, HTTPClient: metadataClient}); err != nil {
 			return err
 		}
 	}
@@ -530,9 +513,9 @@ func run(
 	return runErr
 }
 
-// sellerMCPRedisOptions selects the issuer's connection without changing the
+// publicOAuthRedisOptions preserves the issuer connection aliases and selects the connection without changing the
 // generic Redis configuration, which also selects the STS replay backend.
-func sellerMCPRedisOptions(cfg *config.Config) (*redis.Options, error) {
+func publicOAuthRedisOptions(cfg *config.Config) (*redis.Options, error) {
 	selected := cfg.Redis
 	address, password := os.Getenv("MCP_OAUTH_REDIS_ADDR"), os.Getenv("MCP_OAUTH_REDIS_PASSWORD")
 	if address != "" {
@@ -541,7 +524,7 @@ func sellerMCPRedisOptions(cfg *config.Config) (*redis.Options, error) {
 		return nil, fmt.Errorf("MCP_OAUTH_REDIS_PASSWORD requires MCP_OAUTH_REDIS_ADDR")
 	}
 	if selected == nil || selected.Address == "" {
-		return nil, fmt.Errorf("dynamic MCP onboarding requires Redis")
+		return nil, fmt.Errorf("public OAuth admission requires Redis")
 	}
 	return &redis.Options{Addr: selected.Address, Password: selected.Password, DB: selected.DB,
 		MaxRetries: -1, ContextTimeoutEnabled: true, PoolSize: 8, PoolTimeout: 200 * time.Millisecond,
@@ -624,4 +607,24 @@ func identityImportLockDSN(cfg *config.Config) string {
 		return cfg.IdentityImport.LockDatabaseDSN
 	}
 	return cfg.LegacyUsersSync.LockDatabaseDSN
+}
+
+// Retired protocol settings cannot silently activate or retarget generic OAuth.
+// The Redis connection aliases remain separate protected compatibility settings.
+func rejectRetiredMCPSettings() error {
+	for _, name := range []string{"MCP_OAUTH_ENABLED", "MCP_OAUTH_DYNAMIC_CLIENTS"} {
+		enabled, err := optionalBoolEnv(name, false)
+		if err != nil {
+			return err
+		}
+		if enabled {
+			return fmt.Errorf("%s is retired; configure generic credentials.public_oauth", name)
+		}
+	}
+	for _, name := range []string{"MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_REDIRECT_URI", "MCP_OAUTH_CLIENTS", "MCP_ROUTER_CA_FILE"} {
+		if os.Getenv(name) != "" {
+			return fmt.Errorf("%s is retired; configure generic credential profiles", name)
+		}
+	}
+	return nil
 }

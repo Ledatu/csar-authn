@@ -22,13 +22,14 @@ import (
 const CredentialSchemaVersion = 1
 const CredentialFormatVersion = 1
 const CredentialAPIKeyLimit = 5
-const CredentialOAuthLimit = MCPMaxActiveConnections
+const CredentialOAuthLimit = 100
 const MaxCredentialJSONBytes = 128 << 10
 
 var (
-	ErrCredentialInvalid      = errors.New("invalid credential state or binding")
-	ErrCredentialRequestLimit = errors.New("credential authorization capacity reached")
-	ErrCredentialReplay       = errors.New("credential replay; family revoked")
+	ErrCredentialConnectionLimit = errors.New("active connection credential limit reached")
+	ErrCredentialInvalid         = errors.New("invalid credential state or binding")
+	ErrCredentialRequestLimit    = errors.New("credential authorization capacity reached")
+	ErrCredentialReplay          = errors.New("credential replay; family revoked")
 )
 
 type SecretPurpose string

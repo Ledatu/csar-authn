@@ -14,9 +14,9 @@ import (
 	"github.com/ledatu/csar-core/caller"
 )
 
-var errMCPClientMetadata = errors.New("invalid OAuth client metadata")
+var errOAuthClientMetadata = errors.New("invalid OAuth client metadata")
 
-func validMCPMetadataURL(raw string) bool {
+func validOAuthMetadataURL(raw string) bool {
 	if !strings.HasPrefix(raw, "https://") || !caller.ValidClientID(raw) {
 		return false
 	}
@@ -38,20 +38,20 @@ func validMCPMetadataURL(raw string) bool {
 	return true
 }
 
-func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
+func decodeOAuthClient(raw []byte, id string) (store.OAuthClient, error) {
 	// Explicit null capability fields must not become an implicit public-client
 	// default. Absent properties and malformed declarations are different.
 	var fields map[string]json.RawMessage
 	if len(raw) > 65536 || json.Unmarshal(raw, &fields) != nil || fields == nil {
-		return store.MCPClient{}, errMCPClientMetadata
+		return store.OAuthClient{}, errOAuthClientMetadata
 	}
 	for _, name := range []string{"token_endpoint_auth_method", "token_endpoint_auth_methods_supported", "grant_types", "response_types"} {
 		if value, present := fields[name]; present && strings.TrimSpace(string(value)) == "null" {
-			return store.MCPClient{}, errMCPClientMetadata
+			return store.OAuthClient{}, errOAuthClientMetadata
 		}
 	}
 	var metadata struct {
-		store.MCPClient
+		store.OAuthClient
 		AuthMethods       []string        `json:"token_endpoint_auth_methods_supported"`
 		Secret            json.RawMessage `json:"client_secret"`
 		SecretExpiry      json.RawMessage `json:"client_secret_expires_at"`
@@ -61,11 +61,11 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 	}
 	if len(raw) > 65536 || json.Unmarshal(raw, &metadata) != nil || metadata.Secret != nil || metadata.SecretExpiry != nil ||
 		metadata.SoftwareStatement != nil || metadata.JWKS != nil && metadata.JWKSURI != "" {
-		return store.MCPClient{}, errMCPClientMetadata
+		return store.OAuthClient{}, errOAuthClientMetadata
 	}
-	c := metadata.MCPClient
+	c := metadata.OAuthClient
 	if id != "" && c.ClientID != id || id == "" && c.ClientID != "" {
-		return c, errMCPClientMetadata
+		return c, errOAuthClientMetadata
 	}
 	c.ClientName = strings.TrimSpace(c.ClientName)
 	if c.ClientName == "" && id == "" {
@@ -74,12 +74,12 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 	if !utf8.ValidString(c.ClientName) || utf8.RuneCountInString(c.ClientName) < 1 || utf8.RuneCountInString(c.ClientName) > 80 ||
 		strings.IndexFunc(c.ClientName, unicode.IsControl) >= 0 || len(c.RedirectURIs) < 1 || len(c.RedirectURIs) > 8 ||
 		c.ApplicationType != "" && c.ApplicationType != "web" && c.ApplicationType != "native" {
-		return c, errMCPClientMetadata
+		return c, errOAuthClientMetadata
 	}
 	seen := make(map[string]bool)
 	for _, redirect := range c.RedirectURIs {
 		if len(redirect) > 2048 || !validOAuthRedirect(redirect) || seen[redirect] {
-			return c, errMCPClientMetadata
+			return c, errOAuthClientMetadata
 		}
 		seen[redirect] = true
 	}
@@ -88,15 +88,15 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 	if metadata.AuthMethods != nil {
 		if len(metadata.AuthMethods) > 8 || !slices.Contains(metadata.AuthMethods, "none") ||
 			c.AuthMethod != "" && !slices.Contains(metadata.AuthMethods, c.AuthMethod) {
-			return c, errMCPClientMetadata
+			return c, errOAuthClientMetadata
 		}
 		for _, method := range metadata.AuthMethods {
 			if strings.HasPrefix(method, "client_secret") {
-				return c, errMCPClientMetadata
+				return c, errOAuthClientMetadata
 			}
 		}
 	} else if c.AuthMethod != "" && c.AuthMethod != "none" {
-		return c, errMCPClientMetadata
+		return c, errOAuthClientMetadata
 	}
 	c.AuthMethod = "none"
 	if c.GrantTypes == nil {
@@ -106,7 +106,7 @@ func decodeMCPClient(raw []byte, id string) (store.MCPClient, error) {
 		c.ResponseTypes = []string{"code"}
 	}
 	if len(c.GrantTypes) > 8 || len(c.ResponseTypes) > 8 || !slices.Contains(c.GrantTypes, "authorization_code") || !slices.Contains(c.ResponseTypes, "code") {
-		return c, errMCPClientMetadata
+		return c, errOAuthClientMetadata
 	}
 	refresh := slices.Contains(c.GrantTypes, "refresh_token")
 	c.GrantTypes = []string{"authorization_code"}

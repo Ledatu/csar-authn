@@ -11,6 +11,10 @@ import (
 	"github.com/ledatu/csar-core/origincontext"
 )
 
+// Protected compatibility peer for existing signed-origin callers; it does not
+// enable any retired MCP issuer or validation endpoint. Explicit policy wins.
+const legacyOriginRouterCN = "aurum-api-router-client"
+
 type originIssuer struct {
 	handler  *Handler
 	routerCA *x509.Certificate
@@ -20,7 +24,7 @@ type originIssuer struct {
 // RegisterOriginContext is opt-in and must run before the listener starts.
 // Only the dedicated router may assert an already authenticated root principal.
 func (h *Handler) RegisterOriginContext(mux *http.ServeMux, file string, listener *tls.Config) error {
-	return h.RegisterOriginContextWithPeer(mux, file, sellerRouterCN, listener)
+	return h.RegisterOriginContextWithPeer(mux, file, legacyOriginRouterCN, listener)
 }
 
 // RegisterOriginContextWithPeer is the explicit generic trust path. The existing

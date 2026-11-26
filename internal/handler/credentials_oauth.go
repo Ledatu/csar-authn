@@ -80,7 +80,7 @@ func (u *credentialIssuer) startAuthorization(w http.ResponseWriter, r *http.Req
 			}
 		}
 	}
-	client, err := u.resolvePublicClient(r, in.ClientID, in.RedirectURI)
+	client, err := u.resolvePublicClient(r, in.ClientID)
 	if err != nil {
 		publicClientError(w, err)
 		return

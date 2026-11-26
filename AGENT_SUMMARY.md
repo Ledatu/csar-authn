@@ -1,3 +1,15 @@
+## Obsolete MCP retirement — source only, November 26
+
+The old MCP OAuth/manual/consent/discovery/proof handlers and static-client
+registry are removed. Generic public OAuth/DCR/CIMD and profile-bound manual
+connections remain. Shared metadata, redirect, SSRF and quota coverage now uses
+generic names. Enabling/catalogue MCP settings fail startup explicitly; the Redis
+connection aliases, physical table/JSON/cache/rate/lock identities and caps stay
+exact. Existing personal API key CRUD/readers/scopes/expiry and outbound
+Telegram-ID JWT bridge are unchanged. Historical grants still count toward owner
+capacity; caller revocation still removes their refresh/proof family. No
+historical migration, production, Redis or deployment changes are included.
+
 ## Bounded owner consent metadata — source only
 
 GET /auth/me/credentials?view=consent returns five complete non-secret original
@@ -26,7 +38,7 @@ before resource decisions; request IDs use a valid req_ prefix with fresh entrop
 The one public_oauth_clients.go implementation consolidates existing admission,
 public-HTTPS/SSRF metadata fetch, slots/singleflight/locks and storage. Protected
 Redis prefix/policies, caps and retention remain unchanged, shared across aliases.
-No new legacy MCP adapter layer. Existing old endpoints remain only until direct
+No new legacy MCP adapter layer. The obsolete MCP endpoints are retired after direct
 UI migration/replacement acceptance; the outbound Telegram-ID JWT bridge is kept.
 A compatible Core public receiver loader is required. Production/Redis/deployment
 settings are unchanged; no public activation is implied by merge.
@@ -222,7 +234,10 @@ the existing transactional audit outbox; no async fallback. Listing is explicitl
 active-only and bounded. HTTP registration and token bindings follow separately;
 human/service principals retain their existing issuer stores. No production DDL.
 
-## Hosted seller OAuth
+## Hosted seller OAuth — historical, runtime retired
+
+The obsolete MCP runtime described below is removed; storage migrations and
+physical identities remain for compatibility. Use generic credentials instead.
 
 The optional seller MCP issuer uses authorization codes with PKCE S256 and
 browser-bound consent. `MCP_OAUTH_ENABLED` controls issuer startup independently
@@ -371,7 +386,10 @@ Avatar upload/set/delete routes, S3 signing/cache/client, provider/legacy photo 
   provider ID while the original code is unexpired. Confirmed and consumed
   states keep their original timestamps and cannot be consumed twice.
 
-## Account-wide MCP grants
+## Account-wide MCP grants — historical, runtime retired
+
+The obsolete MCP runtime described below is removed; storage migrations and
+physical identities remain for compatibility. Use generic credentials instead.
 
 Account MCP grants store an explicit campaign selection or all current and future eligible Wildberries campaigns. Migration 024 preserves existing single-cabinet grants. An empty candidate page returns whether the subject has a direct platform administrator assignment. The Campaigns-only access filter checks the authenticated owner and current analytics permission. A discovery credential is single-use. Resolving a live campaign can issue a second single-use credential bound to that seller for the v2 report.
 
@@ -387,7 +405,10 @@ Only credential hashes enter PostgreSQL. Reusing a spent refresh revokes the
 connection. Existing one-hour approvals keep their original deadline. Deploy
 the migrated issuer on all replicas before enabling the updated consent UI.
 
-## Separate MCP public clients
+## Separate MCP public clients — historical, runtime retired
+
+The obsolete MCP runtime described below is removed; storage migrations and
+physical identities remain for compatibility. Use generic credentials instead.
 
 MCP_OAUTH_CLIENTS is a bounded JSON array of client_id, redirect_uris and optional
 allow_loopback_port. It adds explicit registrations beside the primary pair;
@@ -405,7 +426,10 @@ is rejected; all supported clients currently use the public `none` method.
 
 The platform-admin beta check remains in gateway policy; registration alone
 confers no data access. Existing grants retain their client IDs and deadlines.
-## Dynamic MCP storage preparation
+## Dynamic MCP storage preparation — historical, runtime retired
+
+The obsolete MCP runtime described below is removed; storage migrations and
+physical identities remain for compatibility. Use generic credentials instead.
 
 Migration028 adds bounded immutable public-client registrations and browser-bound
 client-name/refresh-policy snapshots. Registration deduplicates canonical metadata
@@ -436,7 +460,10 @@ never populate or change generic Config.Redis: PostgreSQL-backed STS replay
 protection stays PostgreSQL-backed. Production can reuse redis:6379 HAProxy and
 the existing cluster password without changing Redis servers, limits or keys.
 
-## MCP discovery candidate selection
+## MCP discovery candidate selection — historical, runtime retired
+
+The obsolete MCP runtime described below is removed; storage migrations and
+physical identities remain for compatibility. Use generic credentials instead.
 
 The existing Campaigns-only eligibility roster probe includes optional `selection`
 only when `?selection=v1` is requested with a live owner-bound grant. Verified router mTLS and the pinned

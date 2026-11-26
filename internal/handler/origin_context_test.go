@@ -27,9 +27,9 @@ func TestOriginIssuerRequiresDedicatedRouterAndService(t *testing.T) {
 	cfg.JWT.Issuer = "issuer"
 	h.cfg.Store(cfg)
 	ca := &x509.Certificate{Raw: []byte("dedicated")}
-	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: sellerRouterCN}}
+	leaf := &x509.Certificate{Subject: pkix.Name{CommonName: legacyOriginRouterCN}}
 	trusted := &tls.ConnectionState{VerifiedChains: [][]*x509.Certificate{{leaf, ca}}}
-	o := &originIssuer{handler: h, routerCA: ca, peerCN: sellerRouterCN}
+	o := &originIssuer{handler: h, routerCA: ca, peerCN: legacyOriginRouterCN}
 	request := origincontext.RootRequest{Caller: &caller.Identity{Version: 1, CallerKind: caller.Agent, CallerID: "agent", OwnerSubject: "owner", EffectiveSubject: "owner", CredentialKind: caller.APIKey, CredentialID: "key", Assurance: caller.Verified}, Receiver: "reporting", Resource: "tenant", RequestHash: strings.Repeat("a", 64), SourceExpiresAt: time.Now().Add(30 * time.Second)}
 	send := func(body any, state *tls.ConnectionState, service bool, handler http.HandlerFunc) *httptest.ResponseRecorder {
 		payload, err := json.Marshal(body)

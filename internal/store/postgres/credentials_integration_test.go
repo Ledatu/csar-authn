@@ -651,8 +651,8 @@ func TestGenericExpiredApprovalDoesNotDeadlockAnonymousAdmission(t *testing.T) {
 func TestGenericPendingAndApprovedClientsSurviveLegacyRegistrationCleanup(t *testing.T) {
 	s := auditFixture(t)
 	g, c, r, code := genericOAuth(t, s)
-	client := store.MCPClient{ClientID: r.ClientBinding.ClientID, ClientName: "Client", RedirectURIs: []string{r.ClientBinding.RedirectURI}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
-	if _, err := s.RegisterMCPClient(t.Context(), client, genericHash(), 4096); err != nil {
+	client := store.OAuthClient{ClientID: r.ClientBinding.ClientID, ClientName: "Client", RedirectURIs: []string{r.ClientBinding.RedirectURI}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
+	if _, err := s.RegisterOAuthClient(t.Context(), client, genericHash(), 4096); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.pool.Exec(t.Context(), `UPDATE seller_mcp_clients SET expires_at=now()-interval '1 second' WHERE client_id=$1`, client.ClientID); err != nil {
@@ -660,7 +660,7 @@ func TestGenericPendingAndApprovedClientsSurviveLegacyRegistrationCleanup(t *tes
 	}
 	other := client
 	other.ClientID = "https://other.example.test/client"
-	if _, err := s.RegisterMCPClient(t.Context(), other, genericHash(), 4096); err != nil {
+	if _, err := s.RegisterOAuthClient(t.Context(), other, genericHash(), 4096); err != nil {
 		t.Fatal(err)
 	}
 	var exists bool
@@ -670,7 +670,7 @@ func TestGenericPendingAndApprovedClientsSurviveLegacyRegistrationCleanup(t *tes
 	if err := s.ApproveCredentialAuthorization(t.Context(), r.ID, r.BrowserHash, &g, code, c); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.MCPClient(t.Context(), client.ClientID); err != nil {
+	if _, err := s.OAuthClient(t.Context(), client.ClientID); err != nil {
 		t.Fatal("approved generic client remained an expired lease", err)
 	}
 }
