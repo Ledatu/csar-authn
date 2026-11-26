@@ -36,14 +36,10 @@ func (s *Store) CreateAPICredential(ctx context.Context, key *store.APICredentia
 	if err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, key.OwnerID).Scan(&owner); err != nil {
 		return fmt.Errorf("lock API credential owner: %w", err)
 	}
-	var count int
-	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM seller_api_credentials
-WHERE owner_user_id = $1 AND revoked_at IS NULL AND expires_at > now()`, key.OwnerID).Scan(&count); err != nil {
-		return fmt.Errorf("count active API credentials: %w", err)
+	if err := checkAPICapacityTx(ctx, tx, key.OwnerID, maxActive); err != nil {
+		return err
 	}
-	if count >= maxActive {
-		return store.ErrAPICredentialLimit
-	}
+
 	if err := tx.QueryRow(ctx, `INSERT INTO seller_api_credentials
 (id, owner_user_id, seller_id, label, token_hash, token_prefix, expires_at, scopes)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING created_at`,

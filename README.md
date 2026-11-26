@@ -374,3 +374,36 @@ Run local PostgreSQL lifecycle acceptance with MCP_TEST_DATABASE_URL pointing to
 cross-client consent/code/refresh failures, exact callback binding, PKCE, code
 replay, expiry, refresh rotation/reuse and revocation. Synthetic identity/Authz
 fixtures do not constitute native production-client acceptance.
+
+
+## Universal credential storage (source only)
+
+Migration 030 adds generic grant, hashed-secret and browser authorization-request
+storage. It preserves existing seller credentials, caller bindings and historical
+migrations; it does not backfill, dual-write, adopt or reissue old credentials.
+No generic HTTP issuance or bearer format is enabled by this preparation.
+
+The immutable grant owns consent, profile/revision, exact audience, namespaces,
+owner/caller and original deadline. Code/refresh redemption cannot extend that
+deadline; derived proofs also cannot outlive their presented source. Refresh
+rotation rejects old access values; spent-refresh reuse revokes the whole parent
+with durable audit, including reuse after the spent value's individual expiry.
+One-use proof, refresh, create and revoke changes roll back on audit failure.
+Caller-wide revoke covers both representations; account merge revokes new grants
+without transferring consent. Readers require a live unmerged owner and caller.
+Physical deletion of owners/callers with retained new history is denied.
+
+API-key and connection caps count both families under the existing owner lock.
+All writers/readers must converge before new issuance; rolling back a writer
+requires disabling unsupported issuance first. Preserve additive state and audit
+on rollback. No automatic secret-history purge is installed. Public issuer/client
+admission, current Authz checks and migration of consumers follow separately.
+
+Run the real PostgreSQL fixtures only against a disposable localhost
+`csar_audit_test` database, using `AUDIT_TEST_DATABASE_URL`; optional legacy tests
+also use `CSAR_TEST_DSN`. The Go quality workflow provisions this fixture itself.
+Local acceptance: `go build ./...`, `go test ./... -count=1`,
+`golangci-lint run ./...`, and
+`go test -race ./internal/store/... ./internal/handler -count=1`, with those
+fixture variables set. Odyssey pooler acceptance is separate and remains required
+before any operational rollout. No production migration or deployment is included.

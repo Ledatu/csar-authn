@@ -1,5 +1,36 @@
 # csar-authn Agent Summary
 
+## Universal credential storage (U06, source only)
+
+Migration 030 appends `credential_grants`, `credential_secrets` and
+`credential_authorization_requests`; legacy tables/rows/migrations stay intact.
+The grant is the sole immutable owner/caller/consent/original-deadline authority,
+with a direct same-owner caller FK and no duplicate legacy binding. New optional
+`GenericCredentialStore` uses Core constraints and strict versioned decoding,
+including exact uint64 revisions and opaque cross-namespace resource IDs. Only
+SHA-256 hashes enter the secret table; no token/hash/browser state enters audit.
+
+All credential mutations require the existing transactional audit outbox.
+Creation/approval, one-use proof exchange, refresh rotation/replay-family revoke,
+single/caller-wide revoke and source-owner merge revocation commit atomically
+with audit. Lock order is owner, caller, grant, secret. Access rotation retires
+old access values; spent refresh evidence remains through the parent lifetime
+and is not purged automatically. Code/refresh redemption is bounded by original
+consent deadline; proofs are also bounded by presented source expiry. Readers
+require the grant, caller and unmerged owner to remain live. Account merge never
+transfers new consent, including rollback to a writer that only soft-merges.
+Physical owner/caller deletion with retained generic history is denied by FKs.
+
+The existing owner-serialized API-key/connection caps now count old and new
+families. Generic issuance must wait for all relevant writers/readers to converge.
+This capability adds no HTTP issuer/management route or token format; U07 must
+supply live direct-session/CSRF/impersonation guards, exact profile narrowing,
+client admission, deterministic format/purpose dispatch and current Authz checks.
+It changes no runtime enablement, Redis, production DDL/config, certificates or
+outbound Telegram-ID JWT behavior. Local disposable PostgreSQL lifecycle,
+concurrency, audit rollback and legacy migration compatibility tests cover U06;
+the existing Go quality workflow now supplies localhost PG for these fixtures.
+
 ## Feature-specific ingress trust (U05a, source only)
 
 `origin_router_peer_cn` explicitly pins the origin issuer's verified peer name
@@ -15,7 +46,7 @@ are restart-only and rejected before reload mutation. Existing dedicated/general
 CA separation and pool-specific registration checks remain. This pins merged
 Core trust configuration but changes no certificate, key, token contract, Redis
 or deployment. Outbound Telegram-ID route-token signing is unchanged. Generic
-credential issuance/storage remains disabled pending the U06/U07 reviewed design.
+credential issuance remains disabled pending U07; U06 storage is implemented above.
 
 Dynamic onboarding also exposes owner-session `POST /oauth/mcp/tokens` for
 clients that support Bearer headers but cannot perform OAuth. It issues only

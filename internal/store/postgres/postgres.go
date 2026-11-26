@@ -1073,6 +1073,10 @@ func (s *Store) MergeUsers(ctx context.Context, targetID, sourceID uuid.UUID) er
 		return store.ErrUserAlreadyMerged
 	}
 
+	if err := s.revokeCredentialOwnerTx(ctx, tx, sourceID); err != nil {
+		return err
+	}
+
 	// Move all OAuth accounts from source to target.
 	if _, err := tx.Exec(ctx,
 		`UPDATE oauth_accounts SET user_id = $1, updated_at = now() WHERE user_id = $2`,
