@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"slices"
 	"strings"
@@ -99,6 +100,9 @@ func (u *credentialIssuer) introspect(w http.ResponseWriter, r *http.Request) {
 	var children []store.CredentialSecret
 	switch purpose {
 	case store.SecretAccess:
+		if in.Purpose == authntokens.AccessResource {
+			break
+		}
 		raw, proof := genericProof(store.SecretDiscovery, in.Namespace, in.Scope)
 		proof.ID = uuid.New()
 		proof.GrantID = state.Grant.ID
@@ -108,6 +112,12 @@ func (u *credentialIssuer) introspect(w http.ResponseWriter, r *http.Request) {
 		out.ExpiresAt = proof.ExpiresAt
 	case store.SecretResource:
 		if state.Secret.Resource == nil || *state.Secret.Resource != *in.Resource || !effectiveAllows(effective, in.Scope, *in.Resource) {
+			inactive()
+			return
+		}
+	}
+	if in.Purpose == authntokens.GrantResource || in.Purpose == authntokens.AccessResource {
+		if in.Resource == nil || !effectiveAllows(effective, in.Scope, *in.Resource) {
 			inactive()
 			return
 		}
@@ -127,7 +137,17 @@ func (u *credentialIssuer) introspect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	setAuthenticatedContext(r, &store.User{ID: state.Grant.OwnerID}, credentialIdentity(&state))
-	if _, err := u.store.ExchangeCredentialSecret(r.Context(), useCredential(&state), children); err != nil {
+	var useErr error
+	if in.Purpose == authntokens.AccessResource {
+		_, useErr = u.store.UseCredentialAccess(r.Context(), useCredential(&state), in.Scope, *in.Resource)
+	} else {
+		_, useErr = u.store.ExchangeCredentialSecret(r.Context(), useCredential(&state), children)
+	}
+	if useErr != nil {
+		if !errors.Is(useErr, store.ErrNotFound) && !errors.Is(useErr, store.ErrCredentialInvalid) && !errors.Is(useErr, store.ErrCredentialReplay) {
+			credentialError(w, 503)
+			return
+		}
 		inactive()
 		return
 	}
@@ -155,6 +175,10 @@ func (u *credentialIssuer) serviceGrant(w http.ResponseWriter, r *http.Request, 
 		return fail()
 	}
 	original := id.Origin.Caller
+	account := id.Origin.Account
+	if account == nil || account.Kind != "credential" || account.Validate(original) != nil || account.ProfileID != in.ProfileID {
+		return fail()
+	}
 	if original.Validate() != nil || (original.CredentialKind != caller.APIKey && original.CredentialKind != caller.OAuthAccess && original.CredentialKind != caller.DelegationProof) || (original.CallerKind != caller.Agent && original.CallerKind != caller.Application) || original.OwnerSubject != in.OwnerID.String() || original.EffectiveSubject != in.OwnerID.String() || original.CredentialID != in.GrantID.String() {
 		return fail()
 	}
@@ -177,7 +201,7 @@ func (u *credentialIssuer) serviceGrant(w http.ResponseWriter, r *http.Request, 
 		return store.CredentialGrant{}, nil, nil, time.Time{}, false
 	}
 	effective, err := p.Narrow(&g.Constraints)
-	if err != nil || !slices.Contains(effective.Scopes, in.Scope) || g.CallerID.String() != original.CallerID {
+	if err != nil || account.ProfileRevision != g.Constraints.ProfileRevision || account.Audience != g.Constraints.Audience || !slices.Contains(effective.Scopes, in.Scope) || g.CallerID.String() != original.CallerID {
 		return fail()
 	}
 	if original.CredentialKind != caller.DelegationProof && original.CredentialKind != g.Kind {

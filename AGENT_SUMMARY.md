@@ -1,3 +1,7 @@
+## Account-bound private operations and direct access (approved §21, source only)
+
+Generic private inspect/evaluate require the verified account profile/original revision/audience plus owner/caller/grant/service/trust checks. Direct access-resource introspection accepts only an access secret, narrows original consent and checks current Authz before the audited use transaction. The dedicated UseCredentialAccess store operation locks current owner/caller/grant/secret, enforces immutable consent, audits use and creates/consumes no secret. No DDL or signing-key changes. Production, Redis, deployment and outbound Telegram-ID JWT behavior are unchanged.
+
 ## Universal credential issuer and management (U05b/U07, opt-in)
 
 Core #48 supplies explicit compatible grant revisions and pure current-policy
