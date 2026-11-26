@@ -75,6 +75,9 @@ func (s *Store) RevokeCaller(ctx context.Context, owner, id uuid.UUID) (*store.C
 	}
 	var c store.Caller
 	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockCredentialOwnerTx(ctx, tx, owner); err != nil {
+			return err
+		}
 		err := tx.QueryRow(ctx, `UPDATE registered_callers SET revoked_at=clock_timestamp()
 WHERE id=$1 AND owner_user_id=$2 AND revoked_at IS NULL
 RETURNING id,owner_user_id,caller_kind,label,created_at,revoked_at`, id, owner).
@@ -91,6 +94,9 @@ WHERE owner_user_id=$2 AND id::text IN (SELECT credential_id FROM registered_cal
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM seller_mcp_grants WHERE owner_id=$2 AND id::text IN
 (SELECT credential_id FROM registered_caller_credentials WHERE caller_id=$1 AND credential_kind='oauth_access')`, id, owner); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE credential_grants SET revoked_at=clock_timestamp() WHERE owner_user_id=$1 AND caller_id=$2 AND revoked_at IS NULL`, owner, id); err != nil {
 			return err
 		}
 		return s.enqueueCaller(ctx, tx, "credentials.caller.revoke", &c)

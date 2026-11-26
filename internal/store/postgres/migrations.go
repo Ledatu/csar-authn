@@ -474,6 +474,101 @@ ALTER TABLE seller_mcp_requests ADD COLUMN client_name text NOT NULL DEFAULT '',
 ALTER TABLE seller_mcp_grants ADD COLUMN client_name text NOT NULL DEFAULT '';
 `},
 	{Name: "029_mcp_last_used", Up: `ALTER TABLE seller_mcp_grants ADD COLUMN last_used_at timestamptz;`},
+	{Name: "030_universal_credentials", Up: `
+CREATE TABLE credential_grants (
+ id uuid PRIMARY KEY,
+ schema_version smallint NOT NULL CHECK(schema_version=1),
+ owner_user_id uuid NOT NULL,
+ caller_id uuid NOT NULL,
+ credential_kind text NOT NULL CHECK(credential_kind IN ('api_key','oauth_access')),
+ constraints jsonb NOT NULL CHECK((
+   jsonb_typeof(constraints)='object' AND octet_length(constraints::text)<=131072
+   AND constraints->>'version'='1'
+   AND jsonb_typeof(constraints->'scopes')='array'
+   AND jsonb_array_length(constraints->'scopes') BETWEEN 1 AND 32
+   AND jsonb_typeof(constraints->'namespaces')='array'
+   AND jsonb_array_length(constraints->'namespaces') BETWEEN 1 AND 16
+   AND jsonb_typeof(constraints->'selection')='object'
+   AND constraints->'selection'->>'mode' IN ('selected','current_and_future')
+   AND CASE WHEN constraints->'selection'->>'mode'='selected' THEN
+     jsonb_typeof(constraints->'selection'->'resources')='array'
+     AND jsonb_array_length(constraints->'selection'->'resources') BETWEEN 1 AND 256
+     ELSE coalesce(jsonb_array_length(constraints->'selection'->'resources'),0)=0 END) IS TRUE),
+ client_binding jsonb CHECK(client_binding IS NULL OR
+   (jsonb_typeof(client_binding)='object' AND octet_length(client_binding::text)<=8192 AND credential_kind='oauth_access')),
+ label text NOT NULL CHECK(octet_length(label)<=320),
+ created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL CHECK(expires_at>created_at),
+ revoked_at timestamptz,
+ last_used_at timestamptz,
+ FOREIGN KEY(owner_user_id,caller_id) REFERENCES registered_callers(owner_user_id,id)
+);
+CREATE INDEX credential_grants_owner ON credential_grants(owner_user_id,credential_kind,expires_at) WHERE revoked_at IS NULL;
+CREATE INDEX credential_grants_caller ON credential_grants(caller_id,revoked_at);
+CREATE TABLE credential_secrets (
+ id uuid PRIMARY KEY,
+ grant_id uuid NOT NULL REFERENCES credential_grants(id),
+ purpose text NOT NULL CHECK(purpose IN ('access','authorization_code','refresh','exchange','discovery','resource')),
+ format_version smallint NOT NULL CHECK(format_version=1),
+ token_hash char(64) NOT NULL UNIQUE CHECK(token_hash ~ '^[0-9a-f]{64}$'),
+ created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL CHECK(expires_at>created_at),
+ spent_at timestamptz,
+ resource_ref jsonb CHECK((purpose='resource' AND resource_ref IS NOT NULL AND jsonb_typeof(resource_ref)='object' AND octet_length(resource_ref::text)<=1024)
+   OR (purpose<>'resource' AND resource_ref IS NULL)),
+ parent_secret_id uuid,
+ UNIQUE(grant_id,id),
+ FOREIGN KEY(grant_id,parent_secret_id) REFERENCES credential_secrets(grant_id,id),
+ CHECK(parent_secret_id IS NULL OR parent_secret_id<>id)
+);
+CREATE INDEX credential_secrets_grant ON credential_secrets(grant_id,purpose,spent_at);
+CREATE INDEX credential_secrets_expiry ON credential_secrets(expires_at);
+CREATE UNIQUE INDEX credential_secrets_current_refresh ON credential_secrets(grant_id) WHERE purpose='refresh' AND spent_at IS NULL;
+CREATE TABLE credential_authorization_requests (
+ id text PRIMARY KEY CHECK(octet_length(id) BETWEEN 1 AND 128),
+ schema_version smallint NOT NULL CHECK(schema_version=1),
+ browser_hash char(64) NOT NULL CHECK(browser_hash ~ '^[0-9a-f]{64}$'),
+ client_binding jsonb NOT NULL CHECK(jsonb_typeof(client_binding)='object' AND octet_length(client_binding::text)<=8192),
+ profile_id text NOT NULL CHECK(octet_length(profile_id) BETWEEN 1 AND 128),
+ profile_revision numeric(20,0) NOT NULL CHECK(profile_revision BETWEEN 1 AND 18446744073709551615),
+ audience text NOT NULL CHECK(octet_length(audience) BETWEEN 1 AND 512),
+ scopes jsonb NOT NULL CHECK(jsonb_typeof(scopes)='array' AND jsonb_array_length(scopes) BETWEEN 1 AND 32),
+ namespaces jsonb NOT NULL CHECK(jsonb_typeof(namespaces)='array' AND jsonb_array_length(namespaces) BETWEEN 1 AND 16),
+ state text NOT NULL CHECK(octet_length(state)<=2048),
+ created_at timestamptz NOT NULL,
+ expires_at timestamptz NOT NULL CHECK(expires_at>created_at AND expires_at<=created_at+interval '5 minutes'),
+ consumed_at timestamptz
+);
+CREATE INDEX credential_requests_expiry ON credential_authorization_requests(expires_at,consumed_at);
+CREATE INDEX credential_requests_browser ON credential_authorization_requests(browser_hash,((client_binding->>'client_id')));
+CREATE FUNCTION protect_credential_authority() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF TG_TABLE_NAME='credential_grants' THEN
+   IF (to_jsonb(NEW)-'revoked_at'-'last_used_at') IS DISTINCT FROM (to_jsonb(OLD)-'revoked_at'-'last_used_at')
+      OR (OLD.revoked_at IS NOT NULL AND NEW.revoked_at IS DISTINCT FROM OLD.revoked_at) THEN
+     RAISE EXCEPTION 'immutable credential authority';
+   END IF;
+ ELSE
+   IF (to_jsonb(NEW)-'spent_at') IS DISTINCT FROM (to_jsonb(OLD)-'spent_at')
+      OR (OLD.spent_at IS NOT NULL AND NEW.spent_at IS DISTINCT FROM OLD.spent_at) THEN
+     RAISE EXCEPTION 'immutable credential secret or request';
+   END IF;
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER credential_grant_authority BEFORE UPDATE ON credential_grants FOR EACH ROW EXECUTE FUNCTION protect_credential_authority();
+CREATE TRIGGER credential_secret_authority BEFORE UPDATE ON credential_secrets FOR EACH ROW EXECUTE FUNCTION protect_credential_authority();
+-- Requests use the same one-way state guard, with their own column name.
+CREATE FUNCTION protect_credential_request() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+ IF (to_jsonb(NEW)-'consumed_at') IS DISTINCT FROM (to_jsonb(OLD)-'consumed_at')
+    OR (OLD.consumed_at IS NOT NULL AND NEW.consumed_at IS DISTINCT FROM OLD.consumed_at) THEN
+   RAISE EXCEPTION 'immutable credential request';
+ END IF;
+ RETURN NEW;
+END $$;
+CREATE TRIGGER credential_request_authority BEFORE UPDATE ON credential_authorization_requests FOR EACH ROW EXECUTE FUNCTION protect_credential_request();
+`},
 }
 
 // runMigrations applies pending schema migrations using the shared runner.
