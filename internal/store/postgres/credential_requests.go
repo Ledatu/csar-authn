@@ -8,8 +8,11 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/ledatu/csar-authn/internal/store"
+	"github.com/ledatu/csar-core/audit"
+	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/pgutil"
 )
@@ -148,4 +151,51 @@ func (s *Store) ApproveCredentialAuthorization(ctx context.Context, id, browserH
 		*g = copyGrant
 	}
 	return err
+}
+
+// DenyCredentialAuthorization consumes only the browser-bound pending request.
+// It shares approval/admission lock order and creates no credential authority.
+func (s *Store) DenyCredentialAuthorization(ctx context.Context, id, browserHash string, owner uuid.UUID) (store.CredentialAuthorizationRequest, error) {
+	var out store.CredentialAuthorizationRequest
+	if s.outbox == nil {
+		return out, store.ErrCallerAuditRequired
+	}
+	if owner == uuid.Nil || !authntokens.ValidProfileID(id) || !store.ValidCredentialHash(browserHash) {
+		return out, store.ErrCredentialInvalid
+	}
+	err := pgutil.WithTx(ctx, s.pool, func(tx pgx.Tx) error {
+		if err := lockCredentialOwnerTx(ctx, tx, owner); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `LOCK TABLE credential_authorization_requests IN ROW EXCLUSIVE MODE`); err != nil {
+			return err
+		}
+		request, err := scanCredentialRequest(tx.QueryRow(ctx, credentialRequestSQL+` FOR UPDATE`, id, browserHash))
+		if err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `UPDATE credential_authorization_requests SET consumed_at=clock_timestamp() WHERE id=$1 AND browser_hash=$2 AND consumed_at IS NULL AND expires_at>clock_timestamp()`, id, browserHash)
+		if err != nil {
+			return err
+		}
+		if tag.RowsAffected() != 1 {
+			return store.ErrNotFound
+		}
+		body, err := json.Marshal(struct {
+			ProfileID string `json:"profile_id"`
+			ClientID  string `json:"client_id"`
+		}{request.ProfileID, request.ClientBinding.ClientID})
+		if err != nil {
+			return err
+		}
+		if err := s.enqueueAudit(ctx, tx, &audit.Event{Actor: owner.String(), Action: "credentials.authorization.deny", TargetType: "credential_authorization_request", TargetID: id, ScopeType: "subject", ScopeID: owner.String(), AfterState: body}); err != nil {
+			return err
+		}
+		out = request
+		return nil
+	})
+	if err != nil {
+		return store.CredentialAuthorizationRequest{}, err
+	}
+	return out, nil
 }

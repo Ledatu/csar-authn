@@ -17,8 +17,6 @@ import (
 	"github.com/ledatu/csar-core/authntokens"
 	"github.com/ledatu/csar-core/caller"
 	"github.com/ledatu/csar-core/httpx"
-	"github.com/ledatu/csar-core/lock"
-	"github.com/ledatu/csar-core/usagebudget"
 	"github.com/redis/go-redis/v9"
 	"golang.org/x/oauth2"
 )
@@ -35,7 +33,7 @@ type sellerOAuth struct {
 	grants   store.MCPGrantStore
 	clients  sellerMCPRegistry
 	routerCA *x509.Certificate
-	dynamic  *mcpDynamicClients
+	dynamic  *publicOAuthClients
 }
 
 // SellerMCPOAuthOptions makes issuer enablement independent of a vendor list.
@@ -68,6 +66,7 @@ func (h *Handler) RegisterSellerMCPWithOptions(mux *http.ServeMux, opts SellerMC
 }
 
 func (h *Handler) registerSellerMCP(mux *http.ServeMux, clients sellerMCPRegistry, opts SellerMCPOAuthOptions) error {
+	h.publicRegistered = clients
 	if !opts.Enabled {
 		if opts.Dynamic {
 			return errors.New("dynamic MCP onboarding requires the issuer to be enabled")
@@ -84,17 +83,11 @@ func (h *Handler) registerSellerMCP(mux *http.ServeMux, clients sellerMCPRegistr
 	}
 	o := &sellerOAuth{Handler: h, grants: grants, clients: clients, routerCA: ca}
 	if opts.Dynamic {
-		clientStore, ok := h.store.(store.MCPClientStore)
-		if !ok || opts.Redis == nil || opts.HTTPClient == nil {
-			return errors.New("dynamic MCP onboarding requires client storage, Redis and public HTTPS transport")
-		}
-		limiter, err := usagebudget.New(opts.Redis, "authn:mcp:", 200*time.Millisecond)
+		o.dynamic, err = h.sharedPublicClients(opts.Redis, opts.HTTPClient)
 		if err != nil {
 			return err
 		}
-		o.dynamic = &mcpDynamicClients{store: clientStore, cache: opts.Redis, http: opts.HTTPClient,
-			limiter: limiter, locker: lock.NewRedisLocker(opts.Redis), slots: make(chan struct{}, 8)}
-		mux.HandleFunc("POST /oauth/mcp/register", o.registerClient)
+		mux.HandleFunc("POST /oauth/mcp/register", o.dynamic.registerClient)
 		mux.HandleFunc("POST /oauth/mcp/tokens", o.createManualToken)
 	}
 	mux.HandleFunc("POST /internal/seller-mcp/v1/introspect", o.introspect)
@@ -157,7 +150,7 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 	name, refreshAllowed := clientID, true
 	if o.dynamic != nil {
 		if err := o.dynamic.admit(r.Context(), "mcp.authorization", requestPeer(r), 600, time.Minute); err != nil {
-			o.clientError(w, err)
+			publicClientError(w, err)
 			return
 		}
 	}
@@ -168,7 +161,7 @@ func (o *sellerOAuth) authorize(w http.ResponseWriter, r *http.Request) {
 		}
 		client, err := o.dynamic.resolve(r.Context(), clientID)
 		if err != nil {
-			o.clientError(w, err)
+			publicClientError(w, err)
 			return
 		}
 		if !publicOAuthRedirectAllowed(client, redirect) {

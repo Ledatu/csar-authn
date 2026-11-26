@@ -474,7 +474,8 @@ func run(
 	}
 	var mcpRedis *redis.Client
 	var metadataClient *http.Client
-	if dynamicMCP {
+	publicDynamic := cfg.Credentials != nil && cfg.Credentials.Enabled && cfg.Credentials.PublicOAuth != nil && cfg.Credentials.PublicOAuth.Enabled && cfg.Credentials.PublicOAuth.DynamicClients
+	if dynamicMCP || publicDynamic {
 		options, err := sellerMCPRedisOptions(cfg)
 		if err != nil {
 			return err
@@ -514,7 +515,7 @@ func run(
 			return fmt.Errorf("generic credential decision transport: %w", err)
 		}
 		defer decisionClient.Client.CloseIdleConnections()
-		if err := h.RegisterCredentials(mux, srv.TLSConfig(), decisionClient); err != nil {
+		if err := h.RegisterCredentials(mux, srv.TLSConfig(), decisionClient, handler.PublicOAuthDependencies{Redis: mcpRedis, HTTPClient: metadataClient}); err != nil {
 			return err
 		}
 	}

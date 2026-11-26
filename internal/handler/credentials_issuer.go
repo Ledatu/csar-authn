@@ -26,16 +26,18 @@ type credentialTrust struct {
 	peer string
 }
 type credentialIssuer struct {
-	h         *Handler
-	cfg       authnconfig.CredentialConfig
-	store     store.GenericCredentialStore
-	decisions *stsclient.RouterClient
-	trust     map[string]credentialTrust
+	h          *Handler
+	cfg        authnconfig.CredentialConfig
+	store      store.GenericCredentialStore
+	decisions  *stsclient.RouterClient
+	trust      map[string]credentialTrust
+	clients    *publicOAuthClients
+	registered sellerMCPRegistry
 }
 
 // RegisterCredentials is startup-only. No endpoint is registered before all
 // receiver dependencies and exact feature trust policies have been established.
-func (h *Handler) RegisterCredentials(mux *http.ServeMux, listener *tls.Config, decisions *stsclient.RouterClient) error {
+func (h *Handler) RegisterCredentials(mux *http.ServeMux, listener *tls.Config, decisions *stsclient.RouterClient, options ...PublicOAuthDependencies) error {
 	cfg := h.Config()
 	if cfg.Credentials == nil || !cfg.Credentials.Enabled {
 		return nil
@@ -61,6 +63,9 @@ func (h *Handler) RegisterCredentials(mux *http.ServeMux, listener *tls.Config, 
 			return err
 		}
 		u.trust[policy.ID] = credentialTrust{ca: ca, peer: policy.PeerCN}
+	}
+	if err := u.registerPublicOAuth(mux, options); err != nil {
+		return err
 	}
 	mux.HandleFunc("GET /auth/me/credentials", u.bound(u.list))
 	mux.HandleFunc("POST /auth/me/credentials", u.bound(u.create))

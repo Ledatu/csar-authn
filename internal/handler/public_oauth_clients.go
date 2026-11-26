@@ -24,7 +24,7 @@ import (
 
 var errMCPClientUnavailable = errors.New("OAuth client metadata unavailable")
 
-type mcpDynamicClients struct {
+type publicOAuthClients struct {
 	store   store.MCPClientStore
 	cache   *redis.Client
 	http    *http.Client
@@ -34,7 +34,7 @@ type mcpDynamicClients struct {
 	slots   chan struct{}
 }
 
-func (d *mcpDynamicClients) admit(ctx context.Context, policy, peer string, capacity int64, window time.Duration) error {
+func (d *publicOAuthClients) admit(ctx context.Context, policy, peer string, capacity int64, window time.Duration) error {
 	return d.limiter.Take(ctx, usagebudget.Request{Policy: policy, Window: window, Units: 1,
 		Limits: []usagebudget.Limit{{Dimension: "global", Subject: "issuer", Capacity: capacity},
 			{Dimension: "peer", Subject: hashValue(peer), Capacity: capacity / 2}}})
@@ -50,7 +50,7 @@ func requestPeer(r *http.Request) string {
 	return host
 }
 
-func (d *mcpDynamicClients) cached(ctx context.Context, key, id string) (store.MCPClient, bool, error) {
+func (d *publicOAuthClients) cached(ctx context.Context, key, id string) (store.MCPClient, bool, error) {
 	var c store.MCPClient
 	raw, err := d.cache.Get(ctx, key).Bytes()
 	if err == redis.Nil {
@@ -66,7 +66,7 @@ func (d *mcpDynamicClients) cached(ctx context.Context, key, id string) (store.M
 	return parsed, true, nil
 }
 
-func (d *mcpDynamicClients) resolve(ctx context.Context, id string) (store.MCPClient, error) {
+func (d *publicOAuthClients) resolve(ctx context.Context, id string) (store.MCPClient, error) {
 	if strings.HasPrefix(id, "dcr_") {
 		return d.store.MCPClient(ctx, id)
 	}
@@ -128,7 +128,7 @@ func (d *mcpDynamicClients) resolve(ctx context.Context, id string) (store.MCPCl
 	}
 }
 
-func (d *mcpDynamicClients) fetch(ctx context.Context, key, id string) (store.MCPClient, error) {
+func (d *publicOAuthClients) fetch(ctx context.Context, key, id string) (store.MCPClient, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, id, nil)
 	if err != nil {
 		return store.MCPClient{}, errMCPClientMetadata
@@ -230,10 +230,10 @@ func mcpMetadataTTL(header http.Header, now time.Time) time.Duration {
 	return ttl
 }
 
-func (o *sellerOAuth) registerClient(w http.ResponseWriter, r *http.Request) {
+func (d *publicOAuthClients) registerClient(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
-	if err := o.dynamic.admit(r.Context(), "mcp.registration", requestPeer(r), 100, time.Hour); err != nil {
-		o.clientError(w, err)
+	if err := d.admit(r.Context(), "mcp.registration", requestPeer(r), 100, time.Hour); err != nil {
+		publicClientError(w, err)
 		return
 	}
 	media, _, _ := mime.ParseMediaType(r.Header.Get("Content-Type"))
@@ -250,19 +250,19 @@ func (o *sellerOAuth) registerClient(w http.ResponseWriter, r *http.Request) {
 	}
 	canonical, err := json.Marshal(c)
 	if err != nil {
-		o.clientError(w, err)
+		publicClientError(w, err)
 		return
 	}
 	c.ClientID, c.IssuedAt = "dcr_"+randomToken(), time.Now().Unix()
-	c, err = o.dynamic.store.RegisterMCPClient(r.Context(), c, hashValue(string(canonical)), 4096)
+	c, err = d.store.RegisterMCPClient(r.Context(), c, hashValue(string(canonical)), 4096)
 	if err != nil {
-		o.clientError(w, err)
+		publicClientError(w, err)
 		return
 	}
 	httpx.WriteJSON(w, http.StatusCreated, c)
 }
 
-func (o *sellerOAuth) clientError(w http.ResponseWriter, err error) {
+func publicClientError(w http.ResponseWriter, err error) {
 	var exceeded *usagebudget.Exceeded
 	switch {
 	case errors.As(err, &exceeded):

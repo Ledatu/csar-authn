@@ -1,3 +1,24 @@
+## Generic public OAuth receiver — source only
+
+Optional credentials.public_oauth enables standard metadata/GET authorization,
+DCR/CIMD client admission and terminal browser-bound denial over the existing
+generic issuer. Exact configured profiles/resources/aliases and current profile
+revision bind every browser transaction. Public client names are immutable
+self-declared display snapshots in version2 client_binding JSON; no DDL or old
+row rewrite. Codes, refresh, original callback, PKCE, consent and owner/caller
+caps reuse existing transactions and durable audit. Owner shortening bounds code
+and access deadlines as well as the grant. Denial consumes the pending request
+atomically with outbox and cannot later approve. Profile/scope substitution fails
+before resource decisions; request IDs use a valid req_ prefix with fresh entropy.
+
+The one public_oauth_clients.go implementation consolidates existing admission,
+public-HTTPS/SSRF metadata fetch, slots/singleflight/locks and storage. Protected
+Redis prefix/policies, caps and retention remain unchanged, shared across aliases.
+No new legacy MCP adapter layer. Existing old endpoints remain only until direct
+UI migration/replacement acceptance; the outbound Telegram-ID JWT bridge is kept.
+A compatible Core public receiver loader is required. Production/Redis/deployment
+settings are unchanged; no public activation is implied by merge.
+
 ## Account-bound private operations and direct access (approved §21, source only)
 
 Generic private inspect/evaluate require the verified account profile/original revision/audience plus owner/caller/grant/service/trust checks. Direct access-resource introspection accepts only an access secret, narrows original consent and checks current Authz before the audited use transaction. The dedicated UseCredentialAccess store operation locks current owner/caller/grant/secret, enforces immutable consent, audits use and creates/consumes no secret. No DDL or signing-key changes. Production, Redis, deployment and outbound Telegram-ID JWT behavior are unchanged.

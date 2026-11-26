@@ -56,6 +56,8 @@ type CredentialGrant struct {
 }
 
 type CredentialClientBinding struct {
+	ClientName     string `json:"client_name,omitempty"`
+	Resource       string `json:"resource,omitempty"`
 	Version        int    `json:"version"`
 	ClientID       string `json:"client_id"`
 	RedirectURI    string `json:"redirect_uri"`
@@ -126,6 +128,7 @@ type GenericCredentialStore interface {
 	BeginCredentialAuthorization(context.Context, CredentialAuthorizationRequest) error
 	CredentialAuthorization(context.Context, string, string) (CredentialAuthorizationRequest, error)
 	ApproveCredentialAuthorization(context.Context, string, string, *CredentialGrant, CredentialSecret, *Caller) error
+	DenyCredentialAuthorization(context.Context, string, string, uuid.UUID) (CredentialAuthorizationRequest, error)
 }
 
 func ValidCredentialHash(s string) bool {
@@ -154,7 +157,10 @@ func DecodeCredentialJSON(raw []byte, value any) error {
 }
 
 func (b *CredentialClientBinding) Validate() error {
-	if b == nil || b.Version != 1 || !boundedCredentialText(b.ClientID, 2048, false) || !boundedCredentialText(b.RedirectURI, 2048, false) || len(b.PKCEChallenge) != 43 {
+	if b == nil || (b.Version != 1 && b.Version != 2) || !boundedCredentialText(b.ClientID, 2048, false) || !boundedCredentialText(b.RedirectURI, 2048, false) || len(b.PKCEChallenge) != 43 {
+		return ErrCredentialInvalid
+	}
+	if b.Version == 1 && (b.ClientName != "" || b.Resource != "") || b.Version == 2 && (!boundedCredentialText(b.ClientName, 320, false) || utf8.RuneCountInString(b.ClientName) > 80 || !authntokens.ValidAudience(b.Resource)) {
 		return ErrCredentialInvalid
 	}
 	u, e := url.Parse(b.RedirectURI)

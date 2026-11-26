@@ -18,7 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func dynamicMCPFixture(t *testing.T, client *http.Client) (*mcpDynamicClients, *miniredis.Miniredis) {
+func dynamicMCPFixture(t *testing.T, client *http.Client) (*publicOAuthClients, *miniredis.Miniredis) {
 	t.Helper()
 	server := miniredis.RunT(t)
 	cache := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true, ReadTimeout: 200 * time.Millisecond, WriteTimeout: 200 * time.Millisecond})
@@ -27,7 +27,7 @@ func dynamicMCPFixture(t *testing.T, client *http.Client) (*mcpDynamicClients, *
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &mcpDynamicClients{cache: cache, http: client, limiter: limiter, locker: lock.NewRedisLocker(cache), slots: make(chan struct{}, 8)}, server
+	return &publicOAuthClients{cache: cache, http: client, limiter: limiter, locker: lock.NewRedisLocker(cache), slots: make(chan struct{}, 8)}, server
 }
 
 func TestMCPClientMetadataNegotiation(t *testing.T) {
@@ -124,7 +124,7 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 		t.Fatalf("fetched %d times", calls.Load())
 	}
 	// A separate replica reuses the Redis document without its local flight map.
-	other := &mcpDynamicClients{cache: d.cache}
+	other := &publicOAuthClients{cache: d.cache}
 	if c, err := other.resolve(t.Context(), id); err != nil || c.ClientName != "Fixture" {
 		t.Fatal("replica did not use shared cache", err)
 	}
