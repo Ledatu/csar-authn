@@ -62,3 +62,28 @@ func TestSelectelSenderDoesNotRequireYandexCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestEmailSenderBrandingAndEscaping(t *testing.T) {
+	for _, name := range []string{"", "Example <ID> & Company"} {
+		client := &fakeEmailClient{}
+		sender := newEmailSender(authnconfig.EmailOTPConfig{SenderAddress: "login@example.com", SenderName: "Independent sender", Subject: "Configured subject", DisplayName: name}, client)
+		if err := sender.SendOTP(context.Background(), "user@example.com", "<123&456>"); err != nil {
+			t.Fatal(err)
+		}
+		if client.msg.Subject != "Configured subject" {
+			t.Fatal("configured subject changed")
+		}
+		if !strings.Contains(client.msg.HTMLBody, "&lt;123&amp;456&gt;") {
+			t.Fatal("code was not escaped")
+		}
+		if strings.Contains(client.msg.HTMLBody, "<ID>") {
+			t.Fatal("display name was not escaped")
+		}
+		if name == "" && (!strings.Contains(client.msg.TextBody, "Your sign-in code") || strings.Contains(client.msg.TextBody, "Independent sender")) {
+			t.Fatal("default body must be generic and independent of sender name")
+		}
+		if name != "" && (!strings.Contains(client.msg.TextBody, name) || !strings.Contains(client.msg.HTMLBody, "Example &lt;ID&gt; &amp; Company")) {
+			t.Fatal("configured branding missing")
+		}
+	}
+}

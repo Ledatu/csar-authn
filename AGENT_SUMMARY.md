@@ -445,3 +445,9 @@ never proof of current tenant/lifecycle/analytics access. Old consumers retain t
 new consumers may narrow candidate queries before pagination, then check live
 eligibility normally. Browser probes have no selection. No route, token, migration
 or deployment changes accompany this additive response.
+
+## Generic OTP branding (source only, November 26)
+- Email OTP defaults to a generic subject/body. Optional `email_otp.display_name`
+  selects the product name separately from the sender header; HTML escapes both
+  name and code. Configured subject stays exact. Production branding/config and
+  transport behavior are unchanged by source preparation.
