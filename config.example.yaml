@@ -103,7 +103,8 @@ qr_login:
 #   cooldown: "1m"
 #   sender_address: "${EMAIL_OTP_FROM_ADDRESS}"
 #   sender_name: "CSAR Auth"
-#   subject: "Your CSAR sign-in code"
+#   subject: "Your sign-in code"
+#   display_name: "Example ID" # Optional product name, independent of sender_name.
 #   postbox:
 #     endpoint: "${YANDEX_POSTBOX_ENDPOINT:-https://postbox.cloud.yandex.net}"
 #     region: "${YANDEX_POSTBOX_REGION:-ru-central1}"

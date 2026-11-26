@@ -460,3 +460,8 @@ assertions. New endpoints remain disabled until configured. No production DDL,
 Redis changes, signing-key changes or deployment is included. Retain the outbound
 Telegram-ID JWT bridge and stage obsolete incoming-path retirement only after
 consumer migration and inventory.
+
+Email OTP uses generic sign-in wording by default. Optional `email_otp.display_name`
+adds a bounded single-line product name to the body (escaped in HTML), independently
+of `sender_name`. An explicitly configured `subject` remains exact. Configure
+application branding as data during a separately approved rollout.
