@@ -114,7 +114,7 @@ func run(
 	switch cfg.Database.Driver {
 	case "postgres":
 		pgStore, err := postgres.New(ctx, cfg.Database.DSN, postgres.WithLogger(logger),
-			postgres.WithLegacyUsersSyncDSN(cfg.LegacyUsersSync.LockDatabaseDSN))
+			postgres.WithLegacyUsersSyncDSN(identityImportLockDSN(cfg)))
 		if err != nil {
 			return fmt.Errorf("connecting to postgres: %w", err)
 		}
@@ -616,4 +616,12 @@ func stsBootstrapAccounts(cfg *config.Config) []sts.BootstrapAccount {
 		})
 	}
 	return bootstrap
+}
+
+// Both import paths must share one protected advisory lock and session endpoint.
+func identityImportLockDSN(cfg *config.Config) string {
+	if cfg.IdentityImport != nil && cfg.IdentityImport.Enabled && cfg.IdentityImport.LockDatabaseDSN != "" {
+		return cfg.IdentityImport.LockDatabaseDSN
+	}
+	return cfg.LegacyUsersSync.LockDatabaseDSN
 }

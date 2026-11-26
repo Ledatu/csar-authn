@@ -127,6 +127,8 @@ github.com/ledatu/csar-core v0.1.48-0.20261126175556-c769253109bc h1:qEykDP4Logh
 github.com/ledatu/csar-core v0.1.48-0.20261126175556-c769253109bc/go.mod h1:im0Oy/+WaoNQ+5nwpidQ5HU76LsRV9+1+GLHyG38vfs=
 github.com/ledatu/csar-core v0.1.48-0.20261126185418-50fb4d6ba677 h1:uxKlAj6jrtM/98tkIqMBUy9MbCeJZD64eDqeXAcU8d0=
 github.com/ledatu/csar-core v0.1.48-0.20261126185418-50fb4d6ba677/go.mod h1:im0Oy/+WaoNQ+5nwpidQ5HU76LsRV9+1+GLHyG38vfs=
+github.com/ledatu/csar-core v0.1.48-0.20261126191842-55d0462dc534 h1:y72HEFB+Kau3GeZ6r6XOwBXdXnwbpz2OBhRVykqswX0=
+github.com/ledatu/csar-core v0.1.48-0.20261126191842-55d0462dc534/go.mod h1:im0Oy/+WaoNQ+5nwpidQ5HU76LsRV9+1+GLHyG38vfs=
 github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b h1:SwzPTLG/WQOPjGtc6kuXxZMLiclmgBmDLeMwDgJh7EQ=
 github.com/ledatu/csar-proto v0.1.6-0.20261122222626-66dbba1ea79b/go.mod h1:ZGtHTVNny/O2IR7wsFUzRn0NZ9HgdPD/WIsVlbIF/sc=
 github.com/markbates/goth v1.80.0 h1:NnvatczZDzOs1hn9Ug+dVYf2Viwwkp/ZDX5K+GLjan8=

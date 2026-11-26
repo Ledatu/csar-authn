@@ -166,3 +166,26 @@ func TestValidateReloadDisabledEmailAndSessionLock(t *testing.T) {
 		t.Fatalf("session-lock guard changed: %v", err)
 	}
 }
+
+func TestIdentityPolicyRequiresRestart(t *testing.T) {
+	base := &Config{}
+	for _, next := range []*Config{{BrowserDirectory: &authnconfig.BrowserDirectoryConfig{Version: 1}}, {IdentityImport: &authnconfig.IdentityImportConfig{Version: 1}}} {
+		if ValidateReload(base, next) == nil || ValidateReload(next, base) == nil {
+			t.Fatal("identity policy changed without restart")
+		}
+	}
+}
+
+func TestStandaloneImporterTLSRequiresRestart(t *testing.T) {
+	startup := &Config{IdentityImport: &authnconfig.IdentityImportConfig{Version: 1, Enabled: true}}
+	next := *startup
+	next.TLS.ClientCAFile = "different-client-ca"
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("standalone importer TLS changed on reload")
+	}
+	next = *startup
+	next.Cookie.Name = "different-session"
+	if ValidateReload(startup, &next) == nil {
+		t.Fatal("standalone importer session changed on reload")
+	}
+}

@@ -189,6 +189,7 @@ func (h *Handler) RegisterRoutes(mux *http.ServeMux) {
 	}
 
 	mux.HandleFunc("POST /svc/authn/legacy-users-sync", h.handleLegacyUsersSync)
+	mux.HandleFunc("POST /svc/authn/identity-import", h.handleIdentityImport)
 
 	// Permissions endpoints (optional, requires authz service).
 	if h.authzClient != nil {

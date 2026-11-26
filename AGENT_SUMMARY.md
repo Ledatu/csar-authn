@@ -451,3 +451,15 @@ or deployment changes accompany this additive response.
   selects the product name separately from the sender header; HTML escapes both
   name and code. Configured subject stays exact. Production branding/config and
   transport behavior are unchanged by source preparation.
+
+## Explicit directory/import receiver (source only, November 26)
+- Browser directory defaults to canonical subject identity. External IDs, username
+  metadata and linked projections require explicit configuration; login provider
+  enablement grants no disclosure. See IDENTITY_POLICY.md for application mapping.
+- Generic identity import binds named source/provider authority to exact service
+  identity and verified configured general router TLS. Dry run is default; apply
+  reuses the protected legacy session lock, caps and atomic user/link primitives.
+  Fresh per-entry checks and durable audit share a transaction. Imported contacts
+  never become login authority. Native mTLS/PG and rollback/concurrency tests apply.
+- Matching Core identity-policy loader and startup-only reload guards are required.
+  Existing legacy source remains staged for retirement; no production activation.
