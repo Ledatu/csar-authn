@@ -591,3 +591,76 @@ func TestGenericRegistrationIsAtomicAndOwnsStartupConfigPG(t *testing.T) {
 		t.Fatal("running issuer inherited a mutable startup origin", w.Code)
 	}
 }
+
+func TestManualConnectionProfileLifetimeAndSharedCapacityPG(t *testing.T) {
+	f := newCredentialFixture(t)
+	p := &f.u.cfg.Profiles[0]
+	p.GrantTTL = authnconfig.NewDuration(168 * time.Hour)
+	p.ManualIssuance = &authnconfig.CredentialManualIssuance{Family: "connection", MaxTTL: authnconfig.NewDuration(168 * time.Hour)}
+	body := map[string]any{"profile_id": p.ID, "scopes": []string{"facts:read"}, "namespaces": []string{"workspace"}, "selection": map[string]any{"mode": "current_and_future"}, "ttl_seconds": int64(168 * 3600)}
+	for _, ttl := range []int64{0, -1, 3599, 168*3600 + 1, 1<<63 - 1} {
+		body["ttl_seconds"] = ttl
+		if w := f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 400 {
+			t.Fatal("invalid manual lifetime admitted", ttl, w.Code)
+		}
+	}
+	body["ttl_seconds"] = int64(168 * 3600)
+	body["kind"] = "api_key"
+	if w := f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 400 {
+		t.Fatal("body selected family", w.Code)
+	}
+	delete(body, "kind")
+	before := time.Now()
+	w := f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true)
+	if w.Code != 201 {
+		t.Fatal(w.Code, w.Body.String())
+	}
+	var out struct {
+		Token     string    `json:"token"`
+		ID        uuid.UUID `json:"id"`
+		ExpiresAt time.Time `json:"expires_at"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	state, _, _, err := f.u.state(t.Context(), out.Token, store.SecretAccess)
+	if err != nil || state.Grant.Kind != caller.OAuthAccess || state.Grant.ClientBinding != nil || out.ExpiresAt.Before(before.Add(168*time.Hour)) || !state.Grant.ExpiresAt.Equal(state.Secret.ExpiresAt) {
+		t.Fatal("manual policy/deadline lost", err)
+	}
+	// A connection family is accounting, never an OAuth client/refresh capability.
+	form := url.Values{"grant_type": {"refresh_token"}, "client_id": {"invented"}, "refresh_token": {out.Token}}
+	r := httptest.NewRequest("POST", "/oauth/credentials/token", strings.NewReader(form.Encode()))
+	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	denied := httptest.NewRecorder()
+	f.u.token(denied, r)
+	if denied.Code != 400 {
+		t.Fatal("manual connection gained refresh", denied.Code)
+	}
+	// The same owner cap includes one old-format manual connection and all generic
+	// manual grants. Reusing its caller cannot create a second cap or registry entry.
+	_, err = f.st.CreateManualMCP(t.Context(), store.MCPManualToken{OwnerID: f.owner.ID, CallerID: &state.Grant.CallerID, Selection: store.MCPSelection{AllCampaigns: true}, AccessHash: hashValue("legacy-manual-fixture"), Hours: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body["caller_id"] = state.Grant.CallerID
+	body["ttl_seconds"] = int64(3600)
+	for i := 2; i < store.CredentialOAuthLimit; i++ {
+		if w = f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 201 {
+			t.Fatal("connection capacity narrowed", i, w.Code, w.Body.String())
+		}
+	}
+	if w = f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 409 {
+		t.Fatal("aggregate connection cap bypassed", w.Code)
+	}
+	// Personal API capacity remains separate and at five, selected by server policy.
+	p.ManualIssuance = nil
+	delete(body, "ttl_seconds")
+	for range store.CredentialAPIKeyLimit {
+		if w = f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 201 {
+			t.Fatal("API cap incorrectly shares connection slots", w.Code)
+		}
+	}
+	if w = f.send(t, "POST", "/auth/me/credentials", body, f.u.create, true); w.Code != 409 {
+		t.Fatal("personal key cap bypassed", w.Code)
+	}
+}

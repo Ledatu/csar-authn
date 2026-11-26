@@ -72,3 +72,18 @@ func TestGenericReceiverRequiresSecureSessionTLSAndAudit(t *testing.T) {
 		t.Fatal("issuer transport changed on reload")
 	}
 }
+
+func TestManualIssuancePolicyIsCapturedAtStartup(t *testing.T) {
+	declaration := strings.Replace(genericReceiverConfig, "      revision: 2", "      revision: 2\n      manual_issuance: {family: connection, max_ttl: 24h}", 1)
+	cfg, err := LoadFromBytes([]byte(declaration))
+	if err != nil || cfg.Credentials.Profiles[0].ManualIssuance == nil || cfg.Credentials.Profiles[0].ManualIssuance.Family != "connection" {
+		t.Fatal("manual receiver policy rejected", err)
+	}
+	next, err := LoadFromBytes([]byte(strings.Replace(declaration, "max_ttl: 24h", "max_ttl: 12h", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ValidateReload(cfg, next) == nil {
+		t.Fatal("manual lifetime changed during partial reload")
+	}
+}
