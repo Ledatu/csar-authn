@@ -37,7 +37,7 @@ type (
 var NewDuration = authnconfig.NewDuration
 
 // LoadFromBytes delegates to the canonical implementation in csar-core.
-var LoadFromBytes = authnconfig.LoadFromBytesWithIdentityPolicy
+var LoadFromBytes = authnconfig.LoadFromBytesWithProfileAdmission
 
 // Load reads a YAML config file from disk and delegates to LoadFromBytes.
 func Load(path string) (*Config, error) {

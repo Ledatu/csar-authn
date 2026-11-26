@@ -106,6 +106,9 @@ func (u *credentialIssuer) create(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
+	if !u.requireAdmission(w, r, p, owner.ID.String()) {
+		return
+	}
 	fresh, err := in.newCaller(owner.ID, in.Label)
 	if err != nil {
 		credentialError(w, 400)

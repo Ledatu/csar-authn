@@ -318,7 +318,17 @@ func TestGenericIssuerProofPurposeNamespaceAndReplayPG(t *testing.T) {
 	}
 }
 func TestGenericOAuthConsentRotationAndReplayPG(t *testing.T) {
+	testGenericOAuthConsentRotationAndReplay(t, false)
+}
+func TestAdmittedOAuthConsentRotationAndReplayPG(t *testing.T) {
+	testGenericOAuthConsentRotationAndReplay(t, true)
+}
+func testGenericOAuthConsentRotationAndReplay(t *testing.T, admitted bool) {
 	f := newCredentialFixture(t)
+	var admissionMode *string
+	if admitted {
+		admissionMode = enableAdmission(t, f)
+	}
 	client := store.OAuthClient{ClientID: "https://client.example.test/id", ClientName: "Client", RedirectURIs: []string{"https://client.example.test/callback"}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}
 	if _, err := f.st.RegisterOAuthClient(t.Context(), client, strings.Repeat("a", 64), 4096); err != nil {
 		t.Fatal(err)
@@ -397,7 +407,22 @@ func TestGenericOAuthConsentRotationAndReplayPG(t *testing.T) {
 	if _, err := f.st.FindCredentialSecret(t.Context(), hashValue(tokens.Access), store.SecretAccess, 1); err == nil {
 		t.Fatal("old access still active")
 	}
-	f.u.cfg.Profiles[0].Revision = 2 // temporarily incompatible with the original grant
+	if admitted {
+		var rotated struct {
+			Refresh string `json:"refresh_token"`
+		}
+		if json.Unmarshal(w.Body.Bytes(), &rotated) != nil || rotated.Refresh == "" {
+			t.Fatal("rotation response missing")
+		}
+		*admissionMode = "deny"
+		fresh := url.Values{"grant_type": {"refresh_token"}, "client_id": {client.ClientID}, "refresh_token": {rotated.Refresh}}
+		if denied := exchange(fresh); denied.Code != 400 {
+			t.Fatal("lost admission allowed refresh", denied.Code, denied.Body)
+		}
+		*admissionMode = "unavailable" // spent replay still reduces authority on admission failure
+	} else {
+		f.u.cfg.Profiles[0].Revision = 2 // temporarily incompatible with the original grant
+	}
 	w = exchange(q)
 	if w.Code != 400 {
 		t.Fatal("refresh replay")

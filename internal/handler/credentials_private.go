@@ -207,6 +207,9 @@ func (u *credentialIssuer) serviceGrant(w http.ResponseWriter, r *http.Request, 
 	if original.CredentialKind != caller.DelegationProof && original.CredentialKind != g.Kind {
 		return fail()
 	}
+	if !u.requireAdmission(w, r, p, g.OwnerID.String()) {
+		return store.CredentialGrant{}, nil, nil, time.Time{}, false
+	}
 	*r = *r.WithContext(gatewayctx.NewContext(r.Context(), &id))
 	return g, p, effective, minTime(g.ExpiresAt, id.Origin.ExpiresAt), true
 }
