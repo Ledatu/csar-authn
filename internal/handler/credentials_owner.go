@@ -139,6 +139,10 @@ func (u *credentialIssuer) list(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if r.URL.Query().Has("view") {
+		u.listConsent(w, r, owner.ID)
+		return
+	}
 	grants, err := u.store.ListCredentialGrants(r.Context(), owner.ID)
 	if err != nil {
 		credentialError(w, 503)

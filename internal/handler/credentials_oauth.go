@@ -154,7 +154,7 @@ func (u *credentialIssuer) authorizationInfo(w http.ResponseWriter, r *http.Requ
 		credentialError(w, 400)
 		return
 	}
-	httpx.WriteJSON(w, 200, map[string]any{"request_id": request.ID, "profile_id": request.ProfileID, "audience": request.Audience, "scopes": request.Scopes, "namespaces": request.Namespaces, "client_id": request.ClientBinding.ClientID, "redirect_uri": request.ClientBinding.RedirectURI, "refresh_allowed": request.ClientBinding.RefreshAllowed, "expires_at": request.ExpiresAt, "client_name": request.ClientBinding.ClientName, "grant_ttl_seconds": int64(p.GrantTTL.Duration / time.Second)})
+	httpx.WriteJSON(w, 200, map[string]any{"request_id": request.ID, "profile_id": request.ProfileID, "audience": request.Audience, "scopes": request.Scopes, "namespaces": request.Namespaces, "client_id": request.ClientBinding.ClientID, "redirect_uri": request.ClientBinding.RedirectURI, "refresh_allowed": request.ClientBinding.RefreshAllowed, "expires_at": request.ExpiresAt, "client_name": request.ClientBinding.ClientName, "grant_ttl_seconds": int64(p.GrantTTL.Duration / time.Second), "access_ttl_seconds": int64(p.AccessTTL.Duration / time.Second)})
 }
 func (u *credentialIssuer) approveAuthorization(w http.ResponseWriter, r *http.Request) {
 	owner, ok := u.owner(w, r, true)
