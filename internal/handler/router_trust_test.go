@@ -43,7 +43,7 @@ func TestIssuerPeerPoliciesStayIsolatedOnSharedCA(t *testing.T) {
 	if err := h.RegisterOriginContextWithPeer(mux, file, "reports-router", listener); err != nil {
 		t.Fatal(err)
 	}
-	for i, name := range []string{sellerRouterCN, "reports-router", "unknown-router"} {
+	for i, name := range []string{legacyOriginRouterCN, "reports-router", "unknown-router"} {
 		leaf := &x509.Certificate{SerialNumber: big.NewInt(int64(i + 10)), Subject: pkix.Name{CommonName: name}, NotBefore: time.Now().Add(-time.Minute), NotAfter: time.Now().Add(time.Minute), KeyUsage: x509.KeyUsageDigitalSignature}
 		der, err := x509.CreateCertificate(rand.Reader, leaf, ca, key.Public(), key)
 		if err != nil {
@@ -64,7 +64,7 @@ func TestIssuerPeerPoliciesStayIsolatedOnSharedCA(t *testing.T) {
 			t.Fatal("configured transport peer rejected", err)
 		}
 		state := &tls.ConnectionState{VerifiedChains: chains}
-		if verifiedRouterCA(state, legacyCA) != (name == sellerRouterCN) {
+		if verifiedRouterCA(state, legacyCA) != (name == legacyOriginRouterCN) {
 			t.Fatal("legacy feature peer policy broadened")
 		}
 		if verifiedRouterTrust(state, explicitCA, "reports-router") != (name == "reports-router") {

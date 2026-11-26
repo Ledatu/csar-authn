@@ -7,7 +7,7 @@ import (
 	"github.com/ledatu/csar-authn/internal/config"
 )
 
-func TestOptionalMCPFeatureFlags(t *testing.T) {
+func TestRetiredFeatureFlagParsing(t *testing.T) {
 	for _, value := range []string{"", "true", "false", "invalid"} {
 		t.Setenv("MCP_OAUTH_DYNAMIC_CLIENTS", value)
 		got, err := optionalBoolEnv("MCP_OAUTH_DYNAMIC_CLIENTS", false)
@@ -17,7 +17,7 @@ func TestOptionalMCPFeatureFlags(t *testing.T) {
 	}
 }
 
-func TestSellerMCPRedisIsolation(t *testing.T) {
+func TestPublicOAuthRedisIsolation(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		generic      *config.RedisConfig
@@ -43,7 +43,7 @@ func TestSellerMCPRedisIsolation(t *testing.T) {
 			if cfg.Redis != nil {
 				before = *cfg.Redis
 			}
-			options, err := sellerMCPRedisOptions(cfg)
+			options, err := publicOAuthRedisOptions(cfg)
 			if (err != nil) != tc.wantError {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -60,5 +60,40 @@ func TestSellerMCPRedisIsolation(t *testing.T) {
 				t.Fatal("MCP connection bounds changed")
 			}
 		})
+	}
+}
+
+func TestRetiredMCPSettingsRejected(t *testing.T) {
+	names := []string{"MCP_OAUTH_ENABLED", "MCP_OAUTH_DYNAMIC_CLIENTS", "MCP_OAUTH_CLIENT_ID", "MCP_OAUTH_REDIRECT_URI", "MCP_OAUTH_CLIENTS", "MCP_ROUTER_CA_FILE"}
+	for _, name := range names {
+		t.Setenv(name, "")
+	}
+	// Protected Redis aliases select a connection, never the retired protocol.
+	t.Setenv("MCP_OAUTH_REDIS_ADDR", "fixture:6379")
+	t.Setenv("MCP_OAUTH_REDIS_PASSWORD", "fixture")
+	if err := rejectRetiredMCPSettings(); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range names {
+		t.Run(name, func(t *testing.T) {
+			value := "configured"
+			if name == "MCP_OAUTH_ENABLED" || name == "MCP_OAUTH_DYNAMIC_CLIENTS" {
+				value = "true"
+			}
+			t.Setenv(name, value)
+			if err := rejectRetiredMCPSettings(); err == nil {
+				t.Fatal("retired setting accepted")
+			}
+		})
+	}
+	for _, name := range names[:2] {
+		t.Setenv(name, "false")
+	}
+	if err := rejectRetiredMCPSettings(); err != nil {
+		t.Fatal("disabled flags should be harmless", err)
+	}
+	t.Setenv("MCP_OAUTH_ENABLED", "invalid")
+	if err := rejectRetiredMCPSettings(); err == nil {
+		t.Fatal("malformed flag accepted")
 	}
 }

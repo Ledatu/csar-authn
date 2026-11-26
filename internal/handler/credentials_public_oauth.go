@@ -29,7 +29,7 @@ func (h *Handler) sharedPublicClients(cache *redis.Client, client *http.Client) 
 	if h.publicClients != nil {
 		return h.publicClients, nil
 	}
-	st, ok := h.store.(store.MCPClientStore)
+	st, ok := h.store.(store.OAuthClientStore)
 	if !ok {
 		return nil, errors.New("public client registry unavailable")
 	}
@@ -74,7 +74,6 @@ func (u *credentialIssuer) registerPublicOAuth(mux *http.ServeMux, options []Pub
 	if len(options) > 1 {
 		return errors.New("ambiguous public OAuth dependencies")
 	}
-	u.registered = u.h.publicRegistered
 	if u.cfg.PublicOAuth.DynamicClients {
 		if len(options) != 1 {
 			return errors.New("public OAuth admission dependencies unavailable")
@@ -141,18 +140,15 @@ func (u *credentialIssuer) publicAuthorize(w http.ResponseWriter, r *http.Reques
 	in := credentialAuthorizationInput{credentialConsentInput: credentialConsentInput{ProfileID: p.ID, Scopes: strings.Split(q.Get("scope"), " "), Namespaces: slices.Clone(p.Namespaces)}, ClientID: q.Get("client_id"), RedirectURI: q.Get("redirect_uri"), Challenge: q.Get("code_challenge"), ChallengeMethod: q.Get("code_challenge_method"), State: q.Get("state"), resource: q.Get("resource")}
 	u.startAuthorization(w, r, &in, true)
 }
-func (u *credentialIssuer) resolvePublicClient(r *http.Request, id, redirect string) (store.MCPClient, error) {
-	if u.registered.allows(id, redirect) {
-		return store.MCPClient{ClientID: id, ClientName: string([]rune(id)[:min(80, len([]rune(id)))]), RedirectURIs: []string{redirect}, GrantTypes: []string{"authorization_code", "refresh_token"}, ResponseTypes: []string{"code"}, AuthMethod: "none"}, nil
-	}
+func (u *credentialIssuer) resolvePublicClient(r *http.Request, id string) (store.OAuthClient, error) {
 	if u.clients != nil {
 		return u.clients.resolve(r.Context(), id)
 	}
-	st, ok := u.h.store.(store.MCPClientStore)
+	st, ok := u.h.store.(store.OAuthClientStore)
 	if !ok {
-		return store.MCPClient{}, errMCPClientUnavailable
+		return store.OAuthClient{}, errOAuthClientUnavailable
 	}
-	return st.MCPClient(r.Context(), id)
+	return st.OAuthClient(r.Context(), id)
 }
 
 func (u *credentialIssuer) denyAuthorization(w http.ResponseWriter, r *http.Request) {

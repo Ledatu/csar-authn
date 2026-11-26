@@ -26,13 +26,12 @@ type credentialTrust struct {
 	peer string
 }
 type credentialIssuer struct {
-	h          *Handler
-	cfg        authnconfig.CredentialConfig
-	store      store.GenericCredentialStore
-	decisions  *stsclient.RouterClient
-	trust      map[string]credentialTrust
-	clients    *publicOAuthClients
-	registered sellerMCPRegistry
+	h         *Handler
+	cfg       authnconfig.CredentialConfig
+	store     store.GenericCredentialStore
+	decisions *stsclient.RouterClient
+	trust     map[string]credentialTrust
+	clients   *publicOAuthClients
 }
 
 // RegisterCredentials is startup-only. No endpoint is registered before all
@@ -43,7 +42,7 @@ func (h *Handler) RegisterCredentials(mux *http.ServeMux, listener *tls.Config, 
 		return nil
 	}
 	st, ok := h.store.(store.GenericCredentialStore)
-	_, clientsReady := h.store.(store.MCPClientStore)
+	_, clientsReady := h.store.(store.OAuthClientStore)
 	if !ok || !clientsReady || !st.GenericCredentialsReady() || !cfg.Cookie.Secure || !cfg.AuditOutboxEnabled || h.sessMgr == nil || decisions == nil || decisions.Client == nil || !authntokens.ValidAudience(decisions.BaseURL) {
 		return errors.New("generic credential dependencies unavailable")
 	}

@@ -68,7 +68,7 @@ func (s *Store) createCredentialGrantTx(ctx context.Context, tx pgx.Tx, g *store
 			return err
 		}
 	case caller.OAuthAccess:
-		if err := s.checkMCPCapacityTx(ctx, tx, g.OwnerID); err != nil {
+		if err := checkConnectionCapacityTx(ctx, tx, g.OwnerID); err != nil {
 			return err
 		}
 	default:

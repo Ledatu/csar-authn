@@ -11,12 +11,12 @@ import (
 	"github.com/ledatu/csar-core/pgutil"
 )
 
-var _ store.MCPClientStore = (*Store)(nil)
+var _ store.OAuthClientStore = (*Store)(nil)
 
-func (s *Store) RegisterMCPClient(ctx context.Context, client store.MCPClient, fingerprint string, cap int) (store.MCPClient, error) {
+func (s *Store) RegisterOAuthClient(ctx context.Context, client store.OAuthClient, fingerprint string, cap int) (store.OAuthClient, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	var result store.MCPClient
+	var result store.OAuthClient
 	if cap < 1 || cap > 4096 || len(fingerprint) != 64 {
 		return result, errors.New("invalid OAuth registration bounds")
 	}
@@ -52,7 +52,7 @@ func (s *Store) RegisterMCPClient(ctx context.Context, client store.MCPClient, f
 			return err
 		}
 		if count >= cap {
-			return store.ErrMCPClientLimit
+			return store.ErrOAuthClientLimit
 		}
 		if _, err := tx.Exec(ctx, `INSERT INTO seller_mcp_clients(client_id,fingerprint,metadata) VALUES($1,$2,$3)`, client.ClientID, fingerprint, raw); err != nil {
 			return err
@@ -63,8 +63,8 @@ func (s *Store) RegisterMCPClient(ctx context.Context, client store.MCPClient, f
 	return result, err
 }
 
-func (s *Store) MCPClient(ctx context.Context, id string) (store.MCPClient, error) {
-	var client store.MCPClient
+func (s *Store) OAuthClient(ctx context.Context, id string) (store.OAuthClient, error) {
+	var client store.OAuthClient
 	var raw []byte
 	err := s.pool.QueryRow(ctx, `SELECT metadata FROM seller_mcp_clients WHERE client_id=$1 AND (approved_at IS NOT NULL OR expires_at>now())`, id).Scan(&raw)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -75,16 +75,6 @@ func (s *Store) MCPClient(ctx context.Context, id string) (store.MCPClient, erro
 	}
 	err = json.Unmarshal(raw, &client)
 	return client, err
-}
-
-func (s *Store) MCPRequestInfo(ctx context.Context, id, browserHash string) (store.MCPRequestInfo, error) {
-	var result store.MCPRequestInfo
-	err := s.pool.QueryRow(ctx, `SELECT client_id,client_name,redirect_uri,refresh_allowed,expires_at FROM seller_mcp_requests WHERE id=$1 AND browser_hash=$2 AND expires_at>now()`, id, browserHash).
-		Scan(&result.ClientID, &result.ClientName, &result.RedirectURI, &result.RefreshAllowed, &result.ExpiresAt)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return result, store.ErrNotFound
-	}
-	return result, err
 }
 
 // Physical legacy table, generic public-client fields. Approval never replaces

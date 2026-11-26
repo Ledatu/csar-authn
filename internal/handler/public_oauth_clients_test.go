@@ -18,7 +18,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func dynamicMCPFixture(t *testing.T, client *http.Client) (*publicOAuthClients, *miniredis.Miniredis) {
+func publicClientFixture(t *testing.T, client *http.Client) (*publicOAuthClients, *miniredis.Miniredis) {
 	t.Helper()
 	server := miniredis.RunT(t)
 	cache := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true, ReadTimeout: 200 * time.Millisecond, WriteTimeout: 200 * time.Millisecond})
@@ -30,7 +30,7 @@ func dynamicMCPFixture(t *testing.T, client *http.Client) (*publicOAuthClients, 
 	return &publicOAuthClients{cache: cache, http: client, limiter: limiter, locker: lock.NewRedisLocker(cache), slots: make(chan struct{}, 8)}, server
 }
 
-func TestMCPClientMetadataNegotiation(t *testing.T) {
+func TestOAuthClientMetadataNegotiation(t *testing.T) {
 	const id = "https://client.example/oauth/client.json"
 	base := map[string]any{"client_id": id, "client_name": "An application", "redirect_uris": []string{"http://127.0.0.1:4000/callback", "https://client.example/callback"},
 		"token_endpoint_auth_method": "private_key_jwt", "token_endpoint_auth_methods_supported": []string{"none", "private_key_jwt"},
@@ -42,7 +42,7 @@ func TestMCPClientMetadataNegotiation(t *testing.T) {
 		}
 		return raw
 	}
-	c, err := decodeMCPClient(encode(), id)
+	c, err := decodeOAuthClient(encode(), id)
 	if err != nil || c.AuthMethod != "none" || len(c.GrantTypes) != 2 || len(c.ResponseTypes) != 1 {
 		t.Fatal("mutual capability selection failed", err)
 	}
@@ -73,7 +73,7 @@ func TestMCPClientMetadataNegotiation(t *testing.T) {
 	} {
 		original := encode()
 		mutation()
-		if _, err := decodeMCPClient(encode(), id); !errors.Is(err, errMCPClientMetadata) {
+		if _, err := decodeOAuthClient(encode(), id); !errors.Is(err, errOAuthClientMetadata) {
 			t.Fatal("unsafe or incompatible metadata accepted")
 		}
 		if err := json.Unmarshal(original, &base); err != nil {
@@ -82,13 +82,13 @@ func TestMCPClientMetadataNegotiation(t *testing.T) {
 		delete(base, "client_secret")
 	}
 	for _, raw := range []string{"https://client.example/", "https://client.example/a/../client.json", "https://client.example/%2e%2e/client.json", "https://client.example/client.json?token=value", "https://user@client.example/client.json", "http://client.example/client.json"} {
-		if validMCPMetadataURL(raw) {
+		if validOAuthMetadataURL(raw) {
 			t.Fatal("unsafe metadata identifier accepted")
 		}
 	}
 }
 
-func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
+func TestPublicOAuthMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 	var calls atomic.Int32
 	var fail atomic.Bool
 	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -102,11 +102,11 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Cache-Control", "max-age=120")
-		_ = json.NewEncoder(w).Encode(store.MCPClient{ClientID: "https://" + r.Host + "/client.json", ClientName: "Fixture", RedirectURIs: []string{"https://client.example/callback"}, AuthMethod: "none", GrantTypes: []string{"authorization_code"}, ResponseTypes: []string{"code"}})
+		_ = json.NewEncoder(w).Encode(store.OAuthClient{ClientID: "https://" + r.Host + "/client.json", ClientName: "Fixture", RedirectURIs: []string{"https://client.example/callback"}, AuthMethod: "none", GrantTypes: []string{"authorization_code"}, ResponseTypes: []string{"code"}})
 	}))
 	defer server.Close()
 	id := server.URL + "/client.json"
-	d, cache := dynamicMCPFixture(t, server.Client())
+	d, cache := publicClientFixture(t, server.Client())
 	var group sync.WaitGroup
 	for range 12 {
 		group.Go(func() {
@@ -131,7 +131,7 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 	cache.FastForward(121 * time.Second)
 	fail.Store(true)
 	for range 2 {
-		if _, err := d.resolve(t.Context(), id); !errors.Is(err, errMCPClientUnavailable) {
+		if _, err := d.resolve(t.Context(), id); !errors.Is(err, errOAuthClientUnavailable) {
 			t.Fatal("transient remote failure was not classified as unavailable", err)
 		}
 	}
@@ -139,7 +139,7 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 		t.Fatal("an error response was cached")
 	}
 	cache.Close()
-	if _, err := d.resolve(t.Context(), id); !errors.Is(err, errMCPClientUnavailable) {
+	if _, err := d.resolve(t.Context(), id); !errors.Is(err, errOAuthClientUnavailable) {
 		t.Fatal("Redis loss did not fail closed", err)
 	}
 	if calls.Load() != 3 {
@@ -147,8 +147,8 @@ func TestMCPMetadataSharedCacheAndBoundedFailures(t *testing.T) {
 	}
 }
 
-func TestMCPAnonymousQuotaIgnoresUntrustedForwarding(t *testing.T) {
-	d, _ := dynamicMCPFixture(t, http.DefaultClient)
+func TestPublicOAuthAnonymousQuotaIgnoresUntrustedForwarding(t *testing.T) {
+	d, _ := publicClientFixture(t, http.DefaultClient)
 	r := httptest.NewRequest(http.MethodPost, "/oauth/mcp/register", nil)
 	r.RemoteAddr = "192.0.2.1:4000"
 	for i := range 3 {
@@ -161,7 +161,7 @@ func TestMCPAnonymousQuotaIgnoresUntrustedForwarding(t *testing.T) {
 	}
 }
 
-func TestMCPMetadataCacheDirectives(t *testing.T) {
+func TestPublicOAuthMetadataCacheDirectives(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Second)
 	for _, tc := range []struct {
 		control, age string
@@ -173,11 +173,11 @@ func TestMCPMetadataCacheDirectives(t *testing.T) {
 		{"max-age=3600", "", 10 * time.Minute}, {"max-age=10", "30", 0},
 	} {
 		header := http.Header{"Cache-Control": {tc.control}, "Age": {tc.age}, "Date": {now.Format(http.TimeFormat)}}
-		if got := mcpMetadataTTL(header, now); got != tc.want {
+		if got := publicMetadataTTL(header, now); got != tc.want {
 			t.Errorf("%s: %s, want %s", tc.control, got, tc.want)
 		}
 	}
-	if _, err := decodeMCPClient([]byte(strings.Repeat(" ", 65537)), ""); err == nil {
+	if _, err := decodeOAuthClient([]byte(strings.Repeat(" ", 65537)), ""); err == nil {
 		t.Fatal("oversize metadata accepted")
 	}
 }
