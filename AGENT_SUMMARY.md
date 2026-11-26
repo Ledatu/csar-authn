@@ -490,3 +490,16 @@ or deployment changes accompany this additive response.
   never become login authority. Native mTLS/PG and rollback/concurrency tests apply.
 - Matching Core identity-policy loader and startup-only reload guards are required.
   Existing legacy source remains staged for retirement; no production activation.
+
+## Per-profile owner admission — review preparation
+
+Optional credential profile admission is a current routed Authz gate, with a fixed
+configured decision profile/resource and exact granting scope. It applies to manual
+creation, browser consent disclosure/approval, code/refresh/access/proof use and
+private grant inspection/evaluation. Omission adds no gate to API profiles. Public
+anonymous authorization may start a bounded pending request; it cannot approve or
+issue authority without owner admission. Denial, metadata/listing for owner cleanup,
+revocation and spent-refresh compromise reduction remain available after gate loss.
+No admission permission is copied into stored consent; policy updates require restart.
+Compatible runtime/helper readers explicitly opt in. No personal-key/bridge, Redis,
+historical DDL, deployment or live data changes.

@@ -160,6 +160,9 @@ func (u *credentialIssuer) state(ctx context.Context, raw string, purpose store.
 	if err != nil {
 		return s, profile, nil, store.ErrCredentialInvalid
 	}
+	if err := u.admitOwner(ctx, profile, s.Grant.OwnerID.String()); err != nil {
+		return s, profile, nil, err
+	}
 	return s, profile, effective, nil
 }
 
@@ -173,9 +176,6 @@ type credentialDecision struct {
 }
 
 func (u *credentialIssuer) decide(ctx context.Context, profile *authnconfig.CredentialProfile, subject, scope string, refs []authntokens.ResourceRef) ([]credentialDecision, error) {
-	if authntokens.ValidateResources(refs, authntokens.MaxDecisionResources) != nil {
-		return nil, store.ErrCredentialInvalid
-	}
 	var decisionProfile string
 	for _, s := range profile.Scopes {
 		if s.Scope == scope {
@@ -185,6 +185,12 @@ func (u *credentialIssuer) decide(ctx context.Context, profile *authnconfig.Cred
 	if decisionProfile == "" {
 		return nil, store.ErrCredentialInvalid
 	}
+	return u.decideProfile(ctx, profile.Audience, decisionProfile, subject, refs)
+}
+func (u *credentialIssuer) decideProfile(ctx context.Context, audience, decisionProfile, subject string, refs []authntokens.ResourceRef) ([]credentialDecision, error) {
+	if authntokens.ValidateResources(refs, authntokens.MaxDecisionResources) != nil {
+		return nil, store.ErrCredentialInvalid
+	}
 	body, _ := json.Marshal(struct {
 		Version   int                       `json:"version"`
 		Profile   string                    `json:"profile"`
@@ -192,7 +198,7 @@ func (u *credentialIssuer) decide(ctx context.Context, profile *authnconfig.Cred
 		Subject   string                    `json:"subject"`
 		Mode      string                    `json:"subject_mode"`
 		Resources []authntokens.ResourceRef `json:"resources"`
-	}{1, decisionProfile, profile.Audience, subject, "background", refs})
+	}{1, decisionProfile, audience, subject, "background", refs})
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(u.decisions.BaseURL, "/")+"/svc/decisions/check", bytes.NewReader(body))
@@ -216,7 +222,7 @@ func (u *credentialIssuer) decide(ctx context.Context, profile *authnconfig.Cred
 		return nil, errors.New("authorization unavailable")
 	}
 	responseRequest := &http.Request{Body: http.MaxBytesReader(nil, resp.Body, authntokens.MaxConsentResponseBytes)}
-	if httpx.ReadStrictJSON(responseRequest, &out) != nil || out.Version != 1 || out.Profile != decisionProfile || out.Audience != profile.Audience || out.Subject != subject || len(out.Results) != len(refs) || ctx.Err() != nil {
+	if httpx.ReadStrictJSON(responseRequest, &out) != nil || out.Version != 1 || out.Profile != decisionProfile || out.Audience != audience || out.Subject != subject || len(out.Results) != len(refs) || ctx.Err() != nil {
 		return nil, errors.New("invalid authorization response")
 	}
 	for i, result := range out.Results {

@@ -457,3 +457,15 @@ Email OTP uses generic sign-in wording by default. Optional `email_otp.display_n
 adds a bounded single-line product name to the body (escaped in HTML), independently
 of `sender_name`. An explicitly configured `subject` remains exact. Configure
 application branding as data during a separately approved rollout.
+
+### Current profile admission
+
+The compatible receiver supports `credentials.profiles[].admission`: a routed
+Authz decision profile, fixed resource reference and exact required granting scope.
+This keeps restricted profile enrollment separate from consented data permissions.
+Manual issuance and owner OAuth consent require the current gate; credential
+exchange/refresh/proof/private use rechecks it. Unconfigured API profiles retain
+their current owner policy. Authz failure denies new authority; owner denial and
+revocation, plus spent-refresh family revocation, remain available. Admission
+never extends or rewrites an existing grant. Deploy only with the matching Core
+loader/helper and explicitly reviewed per-service Authz capabilities.
